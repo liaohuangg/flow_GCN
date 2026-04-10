@@ -1,0 +1,116 @@
+{
+  "chiplets": [
+    {
+      "name": "A",
+      "x-position": 6.0,
+      "y-position": 82.0,
+      "width": 26.0,
+      "height": 28.0,
+      "rotation": 0,
+      "power": 126.0
+    },
+    {
+      "name": "B",
+      "x-position": 30.0,
+      "y-position": 1.0,
+      "width": 21.0,
+      "height": 22.0,
+      "rotation": 0,
+      "power": 98.0
+    },
+    {
+      "name": "C",
+      "x-position": 1.0,
+      "y-position": 36.0,
+      "width": 4.0,
+      "height": 5.0,
+      "rotation": 0,
+      "power": 168.0
+    },
+    {
+      "name": "D",
+      "x-position": 5.0,
+      "y-position": 0.0,
+      "width": 18.0,
+      "height": 15.0,
+      "rotation": 1,
+      "power": 23.0
+    },
+    {
+      "name": "E",
+      "x-position": 8.0,
+      "y-position": 36.0,
+      "width": 19.0,
+      "height": 17.0,
+      "rotation": 1,
+      "power": 145.0
+    },
+    {
+      "name": "F",
+      "x-position": 0.0,
+      "y-position": 41.0,
+      "width": 6.0,
+      "height": 7.0,
+      "rotation": 1,
+      "power": 127.0
+    },
+    {
+      "name": "G",
+      "x-position": 0.0,
+      "y-position": 53.0,
+      "width": 30.0,
+      "height": 29.0,
+      "rotation": 1,
+      "power": 18.0
+    },
+    {
+      "name": "H",
+      "x-position": 32.0,
+      "y-position": 23.0,
+      "width": 18.0,
+      "height": 18.0,
+      "rotation": 0,
+      "power": 39.0
+    },
+    {
+      "name": "I",
+      "x-position": 5.0,
+      "y-position": 15.0,
+      "width": 25.0,
+      "height": 21.0,
+      "rotation": 1,
+      "power": 29.0
+    },
+    {
+      "name": "J",
+      "x-position": 32.0,
+      "y-position": 41.0,
+      "width": 26.0,
+      "height": 25.0,
+      "rotation": 1,
+      "power": 47.0
+    },
+    {
+      "name": "K",
+      "x-position": 51.0,
+      "y-position": 13.0,
+      "width": 24.0,
+      "height": 23.0,
+      "rotation": 1,
+      "power": 23.0
+    },
+    {
+      "name": "L",
+      "x-position": 75.0,
+      "y-position": 2.0,
+      "width": 22.0,
+      "height": 20.0,
+      "rotation": 0,
+      "power": 158.0
+    }
+  ],
+  "connections": [],
+  "wirelength": 791424.0,
+  "area": 10670.0,
+  "aspect_ratio": 0.882
+}
