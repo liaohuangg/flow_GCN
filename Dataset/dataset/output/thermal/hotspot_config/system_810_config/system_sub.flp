@@ -1,0 +1,5 @@
+# HotSpot floorplan file (sub: outer bounding box)
+# Format: <unit> <width> <height> <x> <y>
+# Unit: meters
+
+Unit0	0.289000	0.289000	0.000000	0.000000
