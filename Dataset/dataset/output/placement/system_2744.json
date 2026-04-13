@@ -1,0 +1,179 @@
+{
+  "chiplets": [
+    {
+      "name": "A",
+      "x-position": 0.0,
+      "y-position": 20.0,
+      "width": 13.0,
+      "height": 16.0,
+      "rotation": 1,
+      "power": 167.0
+    },
+    {
+      "name": "B",
+      "x-position": 13.0,
+      "y-position": 0.0,
+      "width": 29.0,
+      "height": 29.0,
+      "rotation": 0,
+      "power": 54.0
+    },
+    {
+      "name": "C",
+      "x-position": 42.0,
+      "y-position": 15.0,
+      "width": 12.0,
+      "height": 14.0,
+      "rotation": 0,
+      "power": 62.0
+    },
+    {
+      "name": "D",
+      "x-position": 54.0,
+      "y-position": 8.0,
+      "width": 24.0,
+      "height": 21.0,
+      "rotation": 0,
+      "power": 148.0
+    },
+    {
+      "name": "E",
+      "x-position": 78.0,
+      "y-position": 15.0,
+      "width": 15.0,
+      "height": 14.0,
+      "rotation": 0,
+      "power": 133.0
+    },
+    {
+      "name": "F",
+      "x-position": 93.0,
+      "y-position": 15.0,
+      "width": 18.0,
+      "height": 21.0,
+      "rotation": 0,
+      "power": 134.0
+    },
+    {
+      "name": "G",
+      "x-position": 133.0,
+      "y-position": 20.0,
+      "width": 20.0,
+      "height": 23.0,
+      "rotation": 0,
+      "power": 35.0
+    },
+    {
+      "name": "H",
+      "x-position": 153.0,
+      "y-position": 20.0,
+      "width": 15.0,
+      "height": 18.0,
+      "rotation": 0,
+      "power": 184.0
+    },
+    {
+      "name": "I",
+      "x-position": 187.0,
+      "y-position": 20.0,
+      "width": 11.0,
+      "height": 9.0,
+      "rotation": 0,
+      "power": 142.0
+    },
+    {
+      "name": "J",
+      "x-position": 168.0,
+      "y-position": 20.0,
+      "width": 9.0,
+      "height": 9.0,
+      "rotation": 0,
+      "power": 15.0
+    },
+    {
+      "name": "K",
+      "x-position": 189.0,
+      "y-position": 29.0,
+      "width": 9.0,
+      "height": 9.0,
+      "rotation": 0,
+      "power": 8.0
+    },
+    {
+      "name": "L",
+      "x-position": 177.0,
+      "y-position": 12.0,
+      "width": 10.0,
+      "height": 8.0,
+      "rotation": 0,
+      "power": 73.0
+    },
+    {
+      "name": "M",
+      "x-position": 198.0,
+      "y-position": 15.0,
+      "width": 29.0,
+      "height": 25.0,
+      "rotation": 0,
+      "power": 113.0
+    },
+    {
+      "name": "N",
+      "x-position": 227.0,
+      "y-position": 15.0,
+      "width": 16.0,
+      "height": 14.0,
+      "rotation": 0,
+      "power": 148.0
+    },
+    {
+      "name": "O",
+      "x-position": 243.0,
+      "y-position": 15.0,
+      "width": 18.0,
+      "height": 19.0,
+      "rotation": 0,
+      "power": 126.0
+    },
+    {
+      "name": "P",
+      "x-position": 261.0,
+      "y-position": 20.0,
+      "width": 18.0,
+      "height": 21.0,
+      "rotation": 0,
+      "power": 160.0
+    },
+    {
+      "name": "Q",
+      "x-position": 279.0,
+      "y-position": 4.0,
+      "width": 23.0,
+      "height": 25.0,
+      "rotation": 0,
+      "power": 103.0
+    },
+    {
+      "name": "R",
+      "x-position": 302.0,
+      "y-position": 5.0,
+      "width": 22.0,
+      "height": 24.0,
+      "rotation": 0,
+      "power": 127.0
+    },
+    {
+      "name": "S",
+      "x-position": 324.0,
+      "y-position": 29.0,
+      "width": 18.0,
+      "height": 18.0,
+      "rotation": 0,
+      "power": 134.0
+    }
+  ],
+  "connections": [],
+  "wirelength": 3401152.0,
+  "area": 116964.0,
+  "aspect_ratio": 1.0
+}
