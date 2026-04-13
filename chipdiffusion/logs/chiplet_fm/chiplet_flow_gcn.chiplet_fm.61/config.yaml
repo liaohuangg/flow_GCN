@@ -1,0 +1,82 @@
+family: flow_matching
+task: chiplet_flow_gcn
+num_classes: 1
+method: chiplet_fm
+seed: 61
+log_dir: logs/chiplet_fm
+mode: train
+from_checkpoint: none
+logger:
+  filter: .*
+  wandb: false
+  wandb_entity: ''
+  wandb_project: ''
+implementation: custom
+model:
+  mask_key: is_ports
+  use_mask_as_input: true
+  max_diffusion_steps: 200
+  t_encoding_type: sinusoid
+  t_encoding_dim: 32
+  fm_t_min: 0.0001
+  backbone: att_gnn
+  backbone_params:
+    edge_features: 4
+    cond_node_features: 2
+    hidden_size: 64
+    hidden_node_features:
+    - 64
+    - 64
+    attention_node_features:
+    - 32
+    - 32
+    layers_per_block: 2
+    input_encoding_dim: 32
+    dropout: 0.0
+    num_heads: 4
+    mlp_num_layers: 2
+    mlp_size_factor: 4
+    ff_num_layers: 2
+    ff_size_factor: 1
+    att_implementation: flash
+    dir_att_input: true
+    conv_params:
+      layer_type: gat
+      heads: 4
+      concat: true
+    in_node_features: 2
+    out_node_features: 2
+    t_encoding_dim: 32
+    device: cpu
+    mask_key: is_ports
+  guidance_mode: none
+  legality_guidance_weight: 0.0
+  hpwl_guidance_weight: 0.0
+  guidance_step: 0
+  forward_guidance_weight: 0.0
+  grad_descent_steps: 0
+  num_classes: 1
+  input_shape:
+  - 5
+  - 2
+  device: cpu
+cluster:
+  is_cluster: false
+  num_clusters: 512
+  verbose: false
+batch_size: 2
+val_batch_size: 2
+train_steps: 2
+print_every: 2
+eval_every: 0
+eval_samples: 0
+eval_policy: open_loop
+display_examples: 1
+num_output_samples: 0
+lr: 0.0003
+augment: false
+train_data_limit: 8
+val_data_limit: 4
+num_params: 233474
+train_dataset: 8
+val_dataset: 4

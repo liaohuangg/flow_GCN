@@ -2,4 +2,4 @@
 *.log
 
 # 忽略所有 .png 图片文件
-*.png
+*.png.DS_Store

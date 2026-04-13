@@ -1,0 +1,17 @@
+termcolor
+omegaconf
+wandb==0.13.10
+moviepy==1.0.3
+imageio
+ipdb
+matplotlib
+hydra-core
+rich
+torch-geometric==2.4.0
+torch-sparse
+torch-cluster
+torch-spline-conv
+performer-pytorch
+shapely 
+plotly
+scikit-learn

@@ -1,0 +1,60 @@
+defaults:
+  - _self_
+  - model: att-gnn #graph-transformer
+  - model/conv-layer@model.backbone_params: gat
+  - model/size@model.backbone_params: large
+  - guidance@_here_: none
+  - mode@_here_: train
+  - override hydra/hydra_logging: none
+  - override hydra/job_logging: stdout
+
+family: flow_matching
+task: v1.61
+num_classes: 10
+method: debug_flow_matching
+seed: 61
+log_dir: logs/diffusion_debug
+mode: train # train | finetune | ddpo
+from_checkpoint: none
+
+logger:
+  filter: '.*'
+  wandb: True
+  wandb_entity: <your name here>
+  wandb_project: <your project here>
+
+# model params
+implementation: custom
+model:
+  mask_key: is_ports
+  use_mask_as_input: True
+  max_diffusion_steps: 200
+  t_encoding_type: sinusoid
+  t_encoding_dim: 32
+  fm_t_min: 1e-4
+
+# clustering params
+cluster:
+  is_cluster: False
+  num_clusters: 512
+  verbose: False
+
+# training params
+batch_size: 64
+val_batch_size: 64
+train_steps: 3000000
+print_every: 5000
+eval_every: 100000
+eval_samples: 32
+eval_policy: open_loop
+display_examples: 1
+num_output_samples: 0
+lr: 3e-4
+augment: False
+train_data_limit: none
+val_data_limit: none
+
+hydra:
+  output_subdir: null
+  run:
+    dir: .

@@ -1,0 +1,85 @@
+family: continuous_diffusion
+task: v2.61
+num_classes: 10
+method: finetune_large
+seed: 91
+log_dir: logs/diffusion_debug
+mode: finetune
+from_checkpoint: v1.61.train_large.61/step_3000000.ckpt
+implementation: custom
+model:
+  mask_key: is_ports
+  use_mask_as_input: true
+  max_diffusion_steps: 1000
+  noise_schedule: cosine
+  t_encoding_type: sinusoid
+  t_encoding_dim: 32
+  beta_1: 0.0001
+  beta_T: 0.02
+  self_cond_mode: model_output
+  discrete_prediction: x0
+  input_cont_dim: 2
+  input_disc_dim: 3
+  backbone: att_gnn
+  backbone_params:
+    edge_features: 4
+    cond_node_features: 2
+    hidden_size: 256
+    hidden_node_features:
+    - 256
+    - 256
+    - 256
+    attention_node_features:
+    - 256
+    - 256
+    - 256
+    layers_per_block: 2
+    input_encoding_dim: 32
+    dropout: 0.0
+    num_heads: 4
+    mlp_num_layers: 2
+    mlp_size_factor: 4
+    ff_num_layers: 2
+    ff_size_factor: 1
+    att_implementation: flash
+    dir_att_input: true
+    conv_params:
+      layer_type: gat
+      heads: 4
+      concat: true
+    in_node_features: 2
+    out_node_features: 2
+    t_encoding_dim: 32
+    device: cuda
+    mask_key: is_ports
+  guidance_mode: none
+  legality_guidance_weight: 0.0
+  hpwl_guidance_weight: 0.0
+  guidance_step: 0
+  forward_guidance_weight: 0.0
+  grad_descent_steps: 0
+  num_classes: 10
+  input_shape:
+  - 355
+  - 2
+  device: cuda
+cluster:
+  is_cluster: false
+  num_clusters: 512
+  verbose: false
+batch_size: 32
+val_batch_size: 32
+train_steps: 500000
+print_every: 5000
+eval_every: 50000
+eval_samples: 32
+eval_policy: open_loop
+display_examples: 1
+num_output_samples: 0
+lr: 0.0001
+augment: false
+train_data_limit: none
+val_data_limit: none
+num_params: 6285058
+train_dataset: 4600
+val_dataset: 200

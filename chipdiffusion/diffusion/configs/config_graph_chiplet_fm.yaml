@@ -1,0 +1,57 @@
+defaults:
+  - _self_
+  - model: att-gnn
+  - model/conv-layer@model.backbone_params: gat
+  - model/size@model.backbone_params: small
+  - guidance@_here_: none
+  - mode@_here_: train
+  - override hydra/hydra_logging: none
+  - override hydra/job_logging: stdout
+
+family: flow_matching
+task: chiplet_flow_gcn
+num_classes: 1
+method: chiplet_fm
+seed: 61
+log_dir: logs/chiplet_fm
+mode: train
+from_checkpoint: none
+
+logger:
+  filter: ".*"
+  wandb: False
+  wandb_entity: ""
+  wandb_project: ""
+
+implementation: custom
+model:
+  mask_key: is_ports
+  use_mask_as_input: True
+  max_diffusion_steps: 200
+  t_encoding_type: sinusoid
+  t_encoding_dim: 32
+  fm_t_min: 1e-4
+
+cluster:
+  is_cluster: False
+  num_clusters: 512
+  verbose: False
+
+batch_size: 16
+val_batch_size: 16
+train_steps: 100000
+print_every: 500
+eval_every: 0
+eval_samples: 0
+eval_policy: open_loop
+display_examples: 1
+num_output_samples: 0
+lr: 3e-4
+augment: False
+train_data_limit: none
+val_data_limit: none
+
+hydra:
+  output_subdir: null
+  run:
+    dir: .
