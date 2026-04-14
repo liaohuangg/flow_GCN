@@ -1,0 +1,8 @@
+
+  /opt/homebrew/Caskroom/miniconda/base/envs/torch-env/bin/python \
+  scripts/convert_flow_gcn_dataset_single.py \
+    --input-dir /Users/mac/WORK/duffusion/flow_GCN/Dataset/dataset/input_test \
+    --placement-dir /Users/mac/WORK/duffusion/flow_GCN/Dataset/dataset/output/placement \
+    --output-dir /Users/mac/WORK/duffusion/flow_GCN/chipdiffusion/datasets/graph/v2 \
+    --val-ratio 0.1
+等output结束后覆盖v2数据集
