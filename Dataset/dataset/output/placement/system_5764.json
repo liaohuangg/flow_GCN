@@ -1,0 +1,107 @@
+{
+  "chiplets": [
+    {
+      "name": "A",
+      "x-position": 40.0,
+      "y-position": 39.0,
+      "width": 25.0,
+      "height": 21.0,
+      "rotation": 0,
+      "power": 159.0
+    },
+    {
+      "name": "B",
+      "x-position": 6.0,
+      "y-position": 0.0,
+      "width": 20.0,
+      "height": 19.0,
+      "rotation": 0,
+      "power": 21.0
+    },
+    {
+      "name": "C",
+      "x-position": 64.0,
+      "y-position": 6.0,
+      "width": 6.0,
+      "height": 7.0,
+      "rotation": 1,
+      "power": 66.0
+    },
+    {
+      "name": "D",
+      "x-position": 26.0,
+      "y-position": 0.0,
+      "width": 22.0,
+      "height": 25.0,
+      "rotation": 0,
+      "power": 195.0
+    },
+    {
+      "name": "E",
+      "x-position": 3.0,
+      "y-position": 26.0,
+      "width": 23.0,
+      "height": 28.0,
+      "rotation": 0,
+      "power": 136.0
+    },
+    {
+      "name": "F",
+      "x-position": 64.0,
+      "y-position": 0.0,
+      "width": 6.0,
+      "height": 6.0,
+      "rotation": 0,
+      "power": 130.0
+    },
+    {
+      "name": "G",
+      "x-position": 48.0,
+      "y-position": 19.0,
+      "width": 17.0,
+      "height": 20.0,
+      "rotation": 0,
+      "power": 13.0
+    },
+    {
+      "name": "H",
+      "x-position": 20.0,
+      "y-position": 19.0,
+      "width": 6.0,
+      "height": 7.0,
+      "rotation": 0,
+      "power": 77.0
+    },
+    {
+      "name": "I",
+      "x-position": 48.0,
+      "y-position": 0.0,
+      "width": 16.0,
+      "height": 19.0,
+      "rotation": 1,
+      "power": 131.0
+    },
+    {
+      "name": "J",
+      "x-position": 38.0,
+      "y-position": 26.0,
+      "width": 7.0,
+      "height": 7.0,
+      "rotation": 0,
+      "power": 59.0
+    },
+    {
+      "name": "K",
+      "x-position": 26.0,
+      "y-position": 39.0,
+      "width": 12.0,
+      "height": 11.0,
+      "rotation": 1,
+      "power": 16.0
+    }
+  ],
+  "connections": [],
+  "wirelength": 525248.0,
+  "area": 4020.0,
+  "aspect_ratio": 0.896
+}

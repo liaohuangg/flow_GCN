@@ -1,8 +1,4 @@
-#Lines starting with # are used for commenting
-#Blank lines are also ignored
-
-#File Format:
-
+# File Format:
 #<Layer Number>
 #<Lateral heat flow Y/N?>
 #<Power Dissipation Y/N?>
@@ -11,57 +7,56 @@
 #<Thickness in m>
 #<floorplan file>
 
-# Layer 0: Substrate
-#0
-#Y
-#N
-#1.75e6
-#0.01
-#0.00015
-#Chiplet_FR4.flp
+# Layer 0: substrate
+# 0
+# Y
+# N
+# 1.06E+06
+# 3.33
+# 0.0002
+# output/ascend910/step_1L0_Substrate.flp
 
-# Layer 1: thermal interface material (TIM)
-#1
-#Y
-#N
-#4e6
-#0.25
-#2.0e-05
-#Chiplet_TIM1.flp
+# Layer 1: Epoxy SiO2 underfill with C4 copper pillar
+# 1
+# Y
+# N
+# 2.32E+06
+# 0.625
+# 0.00007
+# output/ascend910/step_1L1_C4Layer.flp
 
-# Layer 2: TSV
-#2
-#Y
-#N
-#1.75e6
-#0.0058
-#0.00015
-#3Chiplet_TSV.flp
+# Layer 2: silicon interposer
+# 2
+# Y
+# N
+# 1.75E+06
+# 0.01
+# 0.00011
+# output/ascend910/step_1L2_Interposer.flp
 
-# Layer 3: thermal interface material (TIM)
-#3
-#Y
-#N
-#4e6
-#0.25
-#2.0e-05
-#Chiplet_TIM2.flp
+# Layer 3: Underfill with ubump
+# 3
+# Y
+# N
+# 2.32E+06
+# 0.625
+# 1.00E-05
+# output/ascend910/step_1L3_UbumpLayer.flp
 
-# Layer 4: Silicon
+# Layer 0: Chip layer
 0
 Y
 Y
-1.75e6
+1.75E+06
 0.01
 0.00015
 system.flp
 
-# Layer 5: thermal interface material (TIM)
-#5
-#Y
-#N
-#4e6
-#0.25
-#2.0e-05
-#Chiplet_TIM3.flp
-
+# Layer 5: TIM
+# 5
+# Y
+# N
+# 4.00E+06
+# 0.25
+# 2.00E-05
+# output/ascend910/step_1L5_TIM.flp

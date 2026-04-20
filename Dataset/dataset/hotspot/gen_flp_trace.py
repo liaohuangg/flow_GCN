@@ -4,6 +4,8 @@ import os
 import re
 import shutil
 
+import numpy as np
+
 # 网格单位：0.01mm（所有网格点坐标为 0.01 的整数倍）
 GRID_MM = 0.01
 # 最小块尺寸（mm），避免 degenerate 块
@@ -80,7 +82,7 @@ def generate_ptrace_file(chiplet_list, tim_list, json_path, output_ptrace_path, 
     """根据JSON文件中的power值生成.ptrace文件（同步Chiplet/TIM命名）"""
     with open(json_path, 'r', encoding='utf-8') as f:
         data = json.load(f)
-    
+
     power_dict = {}
     if 'chiplets' in data:
         for chip in data['chiplets']:
@@ -91,17 +93,49 @@ def generate_ptrace_file(chiplet_list, tim_list, json_path, output_ptrace_path, 
                 power_dict[original_name] = power
 
     all_modules = tim_list + chiplet_list
-    power_values = [0.0 if m['name'].startswith('T') and m['name'][1:].isdigit() else power_dict.get(m['name'], 0.0) for m in all_modules]
+    power_values = [
+        0.0 if m['name'].startswith('T') and m['name'][1:].isdigit() else power_dict.get(m['name'], 0.0)
+        for m in all_modules
+    ]
     module_names = [m['name'] for m in all_modules]
-    power_strings = [f"{p:.6f}" for p in power_values]
 
+    # 写入原始 ptrace
+    power_strings = [f"{p:.6f}" for p in power_values]
     with open(output_ptrace_path, 'w', encoding='utf-8') as f:
         f.write(' '.join(module_names) + '\n')
         f.write(' '.join(power_strings) + '\n')
         f.write(' '.join(power_strings) + '\n')
 
+    # 额外生成 10 份：在同一个 system_i_config 下，给每个 chiplet 随机设置 1~200W（TIM 保持 0）
+    # 生成文件：system_1.ptrace ... system_10.ptrace
+    base_dir = os.path.dirname(os.path.abspath(output_ptrace_path))
+
+    chiplet_idxs = [
+        idx for idx, name in enumerate(module_names)
+        if not (name.startswith('T') and name[1:].isdigit())
+    ]
+
+    rng = np.random.default_rng()
+    for j in range(1, 11):
+        swapped = power_values.copy()
+        for idx in chiplet_idxs:
+            orig = float(power_values[idx])
+            # 强保证：随机功耗一定不等于原始 JSON power（相等就重新抽）
+            v = float(rng.integers(1, 201))  # [1, 200]
+            while abs(v - orig) < 1e-9:
+                v = float(rng.integers(1, 201))
+            swapped[idx] = v
+
+        out_path = os.path.join(base_dir, f"system_{j}.ptrace")
+        swapped_strings = [f"{p:.6f}" for p in swapped]
+        with open(out_path, 'w', encoding='utf-8') as f:
+            f.write(' '.join(module_names) + '\n')
+            f.write(' '.join(swapped_strings) + '\n')
+            f.write(' '.join(swapped_strings) + '\n')
+
     print(f"✅ 成功生成.ptrace文件：{output_ptrace_path}")
     print(f"📦 文件包含 {len(all_modules)} 个模块的功耗数据")
+    print(f"✅ 同一布局额外生成 10 份随机功耗 ptrace：{base_dir}/system_[1-10].ptrace")
 
 def load_json_layout(json_path):
     """
@@ -628,8 +662,6 @@ def main(
         output_dir if output_dir else os.path.join(config_dir, f"{json_basename}_config")
     ))
     os.makedirs(output_config_dir, exist_ok=True)
-    # 为 HotSpot 输出 CSV 预创建 data 子目录
-    os.makedirs(os.path.join(output_config_dir, "data"), exist_ok=True)
 
     if output_flp_path is None:
         output_flp_path = os.path.join(

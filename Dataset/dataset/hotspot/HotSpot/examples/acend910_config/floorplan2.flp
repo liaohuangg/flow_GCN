@@ -1,0 +1,18 @@
+
+# Floorplan close to the Alpha EV6 processor
+# Line Format: <unit-name>\t<width>\t<height>\t<left-x>\t<bottom-y>
+# all dimensions are in meters
+# comment lines begin with a '#'
+# comments and empty lines are ignored
+
+chipletA 0.031400 0.014500 0.000100 0.007750
+chipletB 0.016000 0.010500 0.000000 0.022250
+chipletC 0.007750 0.011870 0.016000 0.022250
+chipletD 0.007750 0.011870 0.023750 0.022250
+chipletE 0.011870 0.007750 0.007760 0.000000
+chipletF 0.011870 0.007750 0.019630 0.000000
+TIM0 0.016000 0.001370 0.000000 0.032750 
+TIM1 0.000100 0.007750 0.000000 0.000000 
+TIM2 0.000100 0.014500 0.000000 0.007750 
+TIM3 0.007660 0.007750 0.000100 0.000000 
+
