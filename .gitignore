@@ -9,3 +9,5 @@
 *.csv
 
 **/hotspot_config/system_*_config
+
+**/thermalmodel/checkpoints/*
