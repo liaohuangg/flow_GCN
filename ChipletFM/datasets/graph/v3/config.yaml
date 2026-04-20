@@ -1,0 +1,3 @@
+train_samples: 6300
+val_samples: 700
+scale: 1
