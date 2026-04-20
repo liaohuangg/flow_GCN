@@ -15,7 +15,7 @@ from tool import (
     EMIBNode,
     generate_placement_json_with_EMIB,
 )
-from visualize_emib_layout import draw_from_solution
+from visualize_layout import draw_from_solution
 from ilp_method_chiplet import (
     ILPModelContext,
     ILPPlacementResult,
