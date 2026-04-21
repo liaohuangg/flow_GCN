@@ -193,11 +193,13 @@ class ThermalDataset(Dataset):
         self,
         thermal_map_rel: str = "Dataset/dataset/output/thermal/thermal_map",
         hotspot_cfg_rel: str = "Dataset/dataset/output/thermal/hotspot_config",
-        grid_size: int = 64,
+        power_grid_size: int = 64,
+        temp_grid_size: int = 64,
         stats: Optional[MinMaxStats] = None,
         cases: Optional[List[Tuple[int, int]]] = None,
     ):
-        self.grid_size = grid_size
+        self.power_grid_size = power_grid_size
+        self.temp_grid_size = temp_grid_size
         self.data_root = os.path.join(_project_root(), thermal_map_rel)
         self.hotspot_root = os.path.join(_project_root(), hotspot_cfg_rel)
 
@@ -208,7 +210,9 @@ class ThermalDataset(Dataset):
 
         self.cases = cases if cases is not None else list_cases(self.power_dir)
         if stats is None:
-            stats = compute_minmax(self.data_root, grid_size=grid_size)
+            # Power grid and temp grid may be different resolutions; stats are scalar min/max
+            # over all values, so they are still well-defined.
+            stats = compute_minmax(self.data_root, grid_size=self.temp_grid_size)
         self.stats = stats
 
     def __len__(self) -> int:
@@ -216,7 +220,7 @@ class ThermalDataset(Dataset):
 
     def _layout_mask(self, i: int) -> np.ndarray:
         flp_path = os.path.join(self.hotspot_root, f"system_{i}_config", "system.flp")
-        return flp_to_mask(flp_path, grid_size=self.grid_size)
+        return flp_to_mask(flp_path, grid_size=self.power_grid_size)
 
     def __getitem__(self, idx: int):
         i, j = self.cases[idx]
@@ -226,8 +230,8 @@ class ThermalDataset(Dataset):
         totalp = read_scalar_csv(os.path.join(self.totalp_dir, f"system_totalpower_{i}_{j}.csv"))
         avg = read_scalar_csv(os.path.join(self.avgt_dir, f"system_avgtemp_{i}_{j}.csv"))
 
-        p_grid = vec_to_grid(p_vec, grid_size=self.grid_size)
-        t_grid = vec_to_grid(t_vec, grid_size=self.grid_size)
+        p_grid = vec_to_grid(p_vec, grid_size=self.power_grid_size)
+        t_grid = vec_to_grid(t_vec, grid_size=self.temp_grid_size)
         mask = self._layout_mask(i)
 
         p01 = minmax_scale(p_grid, self.stats.power_min, self.stats.power_max)
@@ -236,9 +240,9 @@ class ThermalDataset(Dataset):
         avg01 = minmax_scale(np.asarray(avg, dtype=np.float32), self.stats.avg_temp_min, self.stats.avg_temp_max)
 
         # tensors
-        power = torch.from_numpy(p01).unsqueeze(0)  # (1,H,W)
-        layout = torch.from_numpy(mask).unsqueeze(0)  # (1,H,W)
-        temp = torch.from_numpy(t01).unsqueeze(0)  # (1,H,W)
+        power = torch.from_numpy(p01).unsqueeze(0)  # (1,Hp,Wp)
+        layout = torch.from_numpy(mask).unsqueeze(0)  # (1,Hp,Wp)
+        temp = torch.from_numpy(t01).unsqueeze(0)  # (1,Ht,Wt)
         totalp_t = torch.tensor([float(totalp01)], dtype=torch.float32)  # (1,)
         avg_t = torch.tensor([float(avg01)], dtype=torch.float32)  # (1,)
 

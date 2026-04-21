@@ -185,7 +185,7 @@ def main() -> None:
         default=str((script_dir / "../output/thermal/hotspot_config").resolve()),
         help="包含 system_i_config 子目录的根目录",
     )
-    parser.add_argument("--grid", type=int, default=64, choices=(32, 64), help="网格尺寸（32 或 64）")
+    parser.add_argument("--grid", type=int, default=64, help="网格尺寸（例如 32/64/128/256）")
     parser.add_argument("--startid", type=int, required=True, help="仅处理 i>=startid")
     parser.add_argument("--endid", type=int, required=True, help="仅处理 i<=endid")
     args = parser.parse_args()
