@@ -19,10 +19,6 @@ class MinMaxStats:
     power_max: float
     temp_min: float
     temp_max: float
-    total_power_min: float
-    total_power_max: float
-    avg_temp_min: float
-    avg_temp_max: float
 
     def to_dict(self) -> Dict[str, float]:
         return {
@@ -30,10 +26,6 @@ class MinMaxStats:
             "power_max": float(self.power_max),
             "temp_min": float(self.temp_min),
             "temp_max": float(self.temp_max),
-            "total_power_min": float(self.total_power_min),
-            "total_power_max": float(self.total_power_max),
-            "avg_temp_min": float(self.avg_temp_min),
-            "avg_temp_max": float(self.avg_temp_max),
         }
 
 
@@ -156,35 +148,24 @@ def list_cases(powercsv_dir: str) -> List[Tuple[int, int]]:
 def compute_minmax(data_root: str, grid_size: int = 64) -> MinMaxStats:
     power_dir = os.path.join(data_root, "powercsv")
     temp_dir = os.path.join(data_root, "tempcsv")
-    totalp_dir = os.path.join(data_root, "totalpowercsv")
-    avgt_dir = os.path.join(data_root, "avgtempcsv")
 
     pmins, pmaxs = [], []
     tmins, tmaxs = [], []
-    totalps, avgs = [], []
 
     for i, j in list_cases(power_dir):
         p = read_index_value_csv(os.path.join(power_dir, f"system_power_{i}_{j}.csv"))
         tt = read_index_value_csv(os.path.join(temp_dir, f"system_temp_{i}_{j}.csv"))
-        totalp = read_scalar_csv(os.path.join(totalp_dir, f"system_totalpower_{i}_{j}.csv"))
-        avg = read_scalar_csv(os.path.join(avgt_dir, f"system_avgtemp_{i}_{j}.csv"))
 
         pmins.append(float(p.min()))
         pmaxs.append(float(p.max()))
         tmins.append(float(tt.min()))
         tmaxs.append(float(tt.max()))
-        totalps.append(float(totalp))
-        avgs.append(float(avg))
 
     return MinMaxStats(
         power_min=float(np.min(pmins)),
         power_max=float(np.max(pmaxs)),
         temp_min=float(np.min(tmins)),
         temp_max=float(np.max(tmaxs)),
-        total_power_min=float(np.min(totalps)),
-        total_power_max=float(np.max(totalps)),
-        avg_temp_min=float(np.min(avgs)),
-        avg_temp_max=float(np.max(avgs)),
     )
 
 
@@ -205,8 +186,6 @@ class ThermalDataset(Dataset):
 
         self.power_dir = os.path.join(self.data_root, "powercsv")
         self.temp_dir = os.path.join(self.data_root, "tempcsv")
-        self.totalp_dir = os.path.join(self.data_root, "totalpowercsv")
-        self.avgt_dir = os.path.join(self.data_root, "avgtempcsv")
 
         self.cases = cases if cases is not None else list_cases(self.power_dir)
         if stats is None:
@@ -227,8 +206,6 @@ class ThermalDataset(Dataset):
 
         p_vec = read_index_value_csv(os.path.join(self.power_dir, f"system_power_{i}_{j}.csv"))
         t_vec = read_index_value_csv(os.path.join(self.temp_dir, f"system_temp_{i}_{j}.csv"))
-        totalp = read_scalar_csv(os.path.join(self.totalp_dir, f"system_totalpower_{i}_{j}.csv"))
-        avg = read_scalar_csv(os.path.join(self.avgt_dir, f"system_avgtemp_{i}_{j}.csv"))
 
         p_grid = vec_to_grid(p_vec, grid_size=self.power_grid_size)
         t_grid = vec_to_grid(t_vec, grid_size=self.temp_grid_size)
@@ -236,22 +213,16 @@ class ThermalDataset(Dataset):
 
         p01 = minmax_scale(p_grid, self.stats.power_min, self.stats.power_max)
         t01 = minmax_scale(t_grid, self.stats.temp_min, self.stats.temp_max)
-        totalp01 = minmax_scale(np.asarray(totalp, dtype=np.float32), self.stats.total_power_min, self.stats.total_power_max)
-        avg01 = minmax_scale(np.asarray(avg, dtype=np.float32), self.stats.avg_temp_min, self.stats.avg_temp_max)
 
         # tensors
         power = torch.from_numpy(p01).unsqueeze(0)  # (1,Hp,Wp)
         layout = torch.from_numpy(mask).unsqueeze(0)  # (1,Hp,Wp)
         temp = torch.from_numpy(t01).unsqueeze(0)  # (1,Ht,Wt)
-        totalp_t = torch.tensor([float(totalp01)], dtype=torch.float32)  # (1,)
-        avg_t = torch.tensor([float(avg01)], dtype=torch.float32)  # (1,)
 
         return {
             "i": i,
             "j": j,
             "power": power,
             "layout": layout,
-            "total_power": totalp_t,
             "temp": temp,
-            "avg_temp": avg_t,
         }

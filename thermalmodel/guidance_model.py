@@ -86,7 +86,7 @@ class LiteInvertedResidual(nn.Module):
 
 
 class FiLM(nn.Module):
-    """FiLM modulation for bottleneck features using total_power scalar."""
+    """FiLM modulation for bottleneck features."""
 
     def __init__(self, cond_dim: int, feat_ch: int, hidden: int = 128):
         super().__init__()
@@ -105,15 +105,9 @@ class FiLM(nn.Module):
 
 
 class ThermalGuidanceNet(nn.Module):
-    """ThermalGuidanceNet: 128x128 grid predictor for diffusion guidance.
+    """ThermalGuidanceNet: 64x64 grid predictor for diffusion guidance.
 
     Required input channels (CoordConv): [power_grid, layout_mask, x_coord_map, y_coord_map].
-
-    Positioning logic for diffusion:
-      If `layout_mask` is produced by a differentiable rasterizer from chiplet positions,
-      then T_pred = f(power, layout_mask, coords, total_power) is differentiable w.r.t. layout.
-      A diffusion sampler can define an energy E(layout) = mean(T_pred) or max(T_pred), then use
-      ∇_layout E as a guidance term to move chiplets along the negative gradient toward lower-temperature regions.
 
     Note:
       The current dataset loader derives a hard 0/1 mask from .flp (not differentiable). For diffusion,
@@ -157,7 +151,6 @@ class ThermalGuidanceNet(nn.Module):
             LiteInvertedResidual(base * 8, base * 8, stride=1, expand_ratio=2),
             LiteInvertedResidual(base * 8, base * 8, stride=1, expand_ratio=2),
         )
-        self.film = FiLM(cond_dim=1, feat_ch=base * 8, hidden=base * 4)
 
         # decoder: upsample + concat skip + conv
         self.up3 = ConvGNAct(base * 8, base * 4, k=1, s=1, p=0)
@@ -166,10 +159,8 @@ class ThermalGuidanceNet(nn.Module):
         self.up2 = ConvGNAct(base * 4, base * 2, k=1, s=1, p=0)
         self.fuse2 = ConvGNAct(base * 4, base * 2, k=3, s=1)
 
-        self.up1 = ConvGNAct(base * 2, base, k=1, s=1, p=0)
-        self.fuse1 = ConvGNAct(base * 2, base, k=3, s=1)
-
-        self.head = nn.Conv2d(base, 1, kernel_size=1)
+        # Head directly at 64x64 (no 128->64 avg_pool downsample)
+        self.head = nn.Conv2d(base * 2, 1, kernel_size=1)
 
         # cache coord maps
         self._coord_hw: Optional[Tuple[int, int]] = None
@@ -187,7 +178,7 @@ class ThermalGuidanceNet(nn.Module):
         x, y = self._coord_xy
         return x.expand(b, -1, -1, -1), y.expand(b, -1, -1, -1)
 
-    def forward(self, power_grid: torch.Tensor, layout_mask: torch.Tensor, total_power: torch.Tensor) -> torch.Tensor:
+    def forward(self, power_grid: torch.Tensor, layout_mask: torch.Tensor) -> torch.Tensor:
         b, _, h, w = power_grid.shape
         xmap, ymap = self._coords(b, h, w, device=power_grid.device, dtype=power_grid.dtype)
 
@@ -203,28 +194,19 @@ class ThermalGuidanceNet(nn.Module):
         x3 = self.d3(s3)
 
         z = self.bottleneck(x3)
-        z = self.film(z, total_power)
 
-        u3 = F.interpolate(z, scale_factor=2, mode="nearest")
+        u3 = F.interpolate(z, scale_factor=2, mode="bilinear", align_corners=False)
         u3 = self.up3(u3)
         u3 = torch.cat([u3, s3], dim=1)
         u3 = self.fuse3(u3)
 
-        u2 = F.interpolate(u3, scale_factor=2, mode="nearest")
+        u2 = F.interpolate(u3, scale_factor=2, mode="bilinear", align_corners=False)
         u2 = self.up2(u2)
         u2 = torch.cat([u2, s2], dim=1)
         u2 = self.fuse2(u2)
 
-        u1 = F.interpolate(u2, scale_factor=2, mode="nearest")
-        u1 = self.up1(u1)
-        u1 = torch.cat([u1, s1], dim=1)
-        u1 = self.fuse1(u1)
-
-        out = self.head(u1)
+        out = self.head(u2)
         out = self.dequant(out)
-
-        # Target is 64x64 temperature grid; downsample prediction from 128x128 -> 64x64.
-        out = F.avg_pool2d(out, kernel_size=2, stride=2)
         return out
 
 
@@ -247,11 +229,26 @@ def spatial_gradient_loss(pred: torch.Tensor, target: torch.Tensor) -> torch.Ten
     return F.mse_loss(gx_p, gx_t) + F.mse_loss(gy_p, gy_t)
 
 
-def guidance_loss(pred: torch.Tensor, target: torch.Tensor, grad_w: float = 0.1) -> Tuple[torch.Tensor, Dict[str, float]]:
-    mse = F.mse_loss(pred, target)
+def guidance_loss(pred: torch.Tensor, target: torch.Tensor, grad_w: float = 0.01) -> Tuple[torch.Tensor, Dict[str, float]]:
+    # 1) base per-pixel MSE
+    base_mse = F.mse_loss(pred, target, reduction="none")
+
+    # 2) hotspot-aware weighting (target is normalized to [0,1])
+    tmin = target.amin(dim=(2, 3), keepdim=True)
+    tmax = target.amax(dim=(2, 3), keepdim=True)
+    weight = 1.0 + 3.0 * (target - tmin) / (tmax - tmin + 1e-8)
+
+    weighted_mse = (base_mse * weight).mean()
+
+    # 3) gradient loss
     grad = spatial_gradient_loss(pred, target)
-    loss = mse + grad_w * grad
-    return loss, {"mse": float(mse.detach().cpu()), "grad": float(grad.detach().cpu()), "loss": float(loss.detach().cpu())}
+
+    loss = weighted_mse + grad_w * grad
+    return loss, {
+        "mse": float(weighted_mse.detach().cpu()),
+        "grad": float(grad.detach().cpu()),
+        "loss": float(loss.detach().cpu()),
+    }
 
 
 @dataclass
@@ -313,7 +310,6 @@ def main_train(args) -> None:
         example_inputs = (
             torch.zeros(args.batch_size, 1, 128, 128, device=device),
             torch.zeros(args.batch_size, 1, 128, 128, device=device),
-            torch.zeros(args.batch_size, 1, device=device),
         )
         model = prepare_qat_fx(model, qconfig_mapping, example_inputs)
         print("[QAT] enabled: prepare_qat_fx(model, qconfig_mapping, example_inputs)")
@@ -340,10 +336,9 @@ def main_train(args) -> None:
         for it, batch in enumerate(train_loader):
             power = batch["power"].to(device)
             layout = batch["layout"].to(device)
-            totalp = batch["total_power"].to(device)
             temp = batch["temp"].to(device)
 
-            pred = model(power, layout, totalp)
+            pred = model(power, layout)
             loss, m = guidance_loss(pred, temp, grad_w=args.grad_w)
 
             opt.zero_grad()
@@ -355,10 +350,10 @@ def main_train(args) -> None:
                 with torch.no_grad():
                     b0_pred = pred[0].detach().cpu()
                     b0_gt = temp[0].detach().cpu()
-                    b0_totalp = float(totalp[0].detach().cpu().item())
+                    b0_totalp = None
                     print(
                         f"[one-batch] ep {epoch:04d} it {it:04d} "
-                        f"loss {m['loss']:.6f} mse {m['mse']:.6f} grad {m['grad']:.6f} total_power {b0_totalp:.6f} "
+                        f"loss {m['loss']:.6f} mse {m['mse']:.6f} grad {m['grad']:.6f} "
                         f"pred(min/max/avg) {float(b0_pred.min()):.4f}/{float(b0_pred.max()):.4f}/{float(b0_pred.mean()):.4f} "
                         f"gt(min/max/avg) {float(b0_gt.min()):.4f}/{float(b0_gt.max()):.4f}/{float(b0_gt.mean()):.4f}"
                     )
@@ -381,10 +376,9 @@ def main_train(args) -> None:
             for batch in val_loader:
                 power = batch["power"].to(device)
                 layout = batch["layout"].to(device)
-                totalp = batch["total_power"].to(device)
                 temp = batch["temp"].to(device)
 
-                pred = model(power, layout, totalp)
+                pred = model(power, layout)
                 _, m = guidance_loss(pred, temp, grad_w=args.grad_w)
                 for k in vm:
                     vm[k] += m[k]
@@ -527,10 +521,9 @@ def main_test(args) -> None:
         for batch in loader:
             power = batch["power"].to(device)
             layout = batch["layout"].to(device)
-            totalp = batch["total_power"].to(device)
             temp = batch["temp"].to(device)
 
-            pred = model(power, layout, totalp)
+            pred = model(power, layout)
 
             mse = F.mse_loss(pred, temp, reduction="none").mean(dim=(1, 2, 3)).detach().cpu()
             rmse = torch.sqrt(mse)
@@ -597,3 +590,10 @@ if __name__ == "__main__":
         main_test(args)
 
 # python guidance_model.py train --epochs 20 --batch_size 16 --ckpt_every 50 --print_every 10
+'''
+train
+python /root/placement/flow_GCN/thermalmodel/guidance_model.py train --epochs 20 --batch_size 16 --lr 5e-4 --base 32 --grad_w 0.01 --ckpt_every 1 --print_every 10
+
+test
+python /root/placement/flow_GCN/thermalmodel/guidance_model.py test --ckpt /root/placement/flow_GCN/thermalmodel/checkpoints/guidance_net_epoch20.pth  --batch_size 8 --out_fig_dir /root/placement/flow_GCN/thermalmodel/test_result/test_guidance_fig
+'''
