@@ -188,4 +188,4 @@ if __name__ == "__main__":
     main()
 
 #python gen_legal_pla.py --start 1 --end 20 --no-console
-# python gen_legal_pla.py --start 4155 --end 8000 --no-console > /root/placement/flow_GCN/Dataset/dataset/dataset.log 2>&1
+# python gen_legal_pla.py --start 10309 --end 12000 --no-console > /root/placement/flow_GCN/Dataset/dataset/dataset6.log 2>&1

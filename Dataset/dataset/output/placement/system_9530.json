@@ -1,0 +1,80 @@
+{
+  "chiplets": [
+    {
+      "name": "A",
+      "x-position": 0.0,
+      "y-position": 24.0,
+      "width": 20.0,
+      "height": 18.0,
+      "rotation": 1,
+      "power": 190.0
+    },
+    {
+      "name": "B",
+      "x-position": 43.0,
+      "y-position": 8.0,
+      "width": 16.0,
+      "height": 15.0,
+      "rotation": 0,
+      "power": 95.0
+    },
+    {
+      "name": "C",
+      "x-position": 20.0,
+      "y-position": 23.0,
+      "width": 23.0,
+      "height": 24.0,
+      "rotation": 1,
+      "power": 198.0
+    },
+    {
+      "name": "D",
+      "x-position": 23.0,
+      "y-position": 7.0,
+      "width": 17.0,
+      "height": 16.0,
+      "rotation": 1,
+      "power": 162.0
+    },
+    {
+      "name": "E",
+      "x-position": 0.0,
+      "y-position": 0.0,
+      "width": 20.0,
+      "height": 24.0,
+      "rotation": 1,
+      "power": 87.0
+    },
+    {
+      "name": "F",
+      "x-position": 0.0,
+      "y-position": 42.0,
+      "width": 10.0,
+      "height": 8.0,
+      "rotation": 0,
+      "power": 98.0
+    },
+    {
+      "name": "G",
+      "x-position": 43.0,
+      "y-position": 23.0,
+      "width": 24.0,
+      "height": 28.0,
+      "rotation": 0,
+      "power": 110.0
+    },
+    {
+      "name": "H",
+      "x-position": 10.0,
+      "y-position": 42.0,
+      "width": 10.0,
+      "height": 9.0,
+      "rotation": 1,
+      "power": 98.0
+    }
+  ],
+  "connections": [],
+  "wirelength": 230720.0,
+  "area": 3417.0,
+  "aspect_ratio": 0.761
+}

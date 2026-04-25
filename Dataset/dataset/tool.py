@@ -27,7 +27,7 @@ try:
 except ImportError:
     gp = None
 
-from input_process import build_chiplet_table, load_chiplets_json
+from placement.flow_GCN.Dataset.dataset.input_preprocess import build_chiplet_table, load_chiplets_json
 
 # 导入ILP相关的类型（如果可用）
 try:

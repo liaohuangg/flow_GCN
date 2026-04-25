@@ -1,0 +1,44 @@
+{
+  "chiplets": [
+    {
+      "name": "A",
+      "x-position": 0.0,
+      "y-position": 0.0,
+      "width": 16.0,
+      "height": 13.0,
+      "rotation": 1,
+      "power": 48.0
+    },
+    {
+      "name": "B",
+      "x-position": 11.5,
+      "y-position": 13.0,
+      "width": 23.0,
+      "height": 20.0,
+      "rotation": 0,
+      "power": 92.0
+    },
+    {
+      "name": "C",
+      "x-position": 4.5,
+      "y-position": 13.0,
+      "width": 7.0,
+      "height": 6.0,
+      "rotation": 0,
+      "power": 122.0
+    },
+    {
+      "name": "D",
+      "x-position": 16.0,
+      "y-position": 1.0,
+      "width": 14.0,
+      "height": 12.0,
+      "rotation": 0,
+      "power": 175.0
+    }
+  ],
+  "connections": [],
+  "wirelength": 45184.0,
+  "area": 1138.5,
+  "aspect_ratio": 0.957
+}

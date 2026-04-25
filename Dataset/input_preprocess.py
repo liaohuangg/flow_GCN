@@ -463,5 +463,5 @@ def main():
 
 
 if __name__ == '__main__':
-    # python input_preprocess.py --generate-random-cfg --generate-count 8000 --generate-out-dir config
+    # python input_preprocess.py --generate-random-cfg --generate-count 50000 --generate-out-dir config
     main()

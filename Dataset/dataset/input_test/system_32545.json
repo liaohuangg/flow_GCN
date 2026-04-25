@@ -1,0 +1,51 @@
+{
+  "chiplets": [
+    {
+      "name": "A",
+      "width": 21.0,
+      "height": 22.0,
+      "power": 41
+    },
+    {
+      "name": "B",
+      "width": 20.0,
+      "height": 20.0,
+      "power": 120
+    },
+    {
+      "name": "C",
+      "width": 26.0,
+      "height": 25.0,
+      "power": 45
+    }
+  ],
+  "connections": [
+    {
+      "node1": "A",
+      "node2": "B",
+      "wireCount": 128,
+      "EMIBType": "interfaceC",
+      "EMIB_length": 3.2,
+      "EMIB_max_width": 99.0,
+      "EMIB_bump_width": 0.5
+    },
+    {
+      "node1": "A",
+      "node2": "C",
+      "wireCount": 1024,
+      "EMIBType": "interfaceC",
+      "EMIB_length": 25.6,
+      "EMIB_max_width": 99.0,
+      "EMIB_bump_width": 0.5
+    },
+    {
+      "node1": "B",
+      "node2": "C",
+      "wireCount": 128,
+      "EMIBType": "interfaceC",
+      "EMIB_length": 3.2,
+      "EMIB_max_width": 99.0,
+      "EMIB_bump_width": 0.5
+    }
+  ]
+}

@@ -1,188 +1,160 @@
 # Thermal Guidance Model (`guidance_model.py`)
 
-This document describes the **inputs**, **model structure**, **outputs**, and the **design rationale** of `/root/placement/flow_GCN/thermalmodel/guidance_model.py`.
+本文档描述 `/root/placement/flow_GCN/thermalmodel/guidance_model.py` 当前版本的 **输入/输出**、**网络结构**、**损失函数**、**训练与测试流程** 以及 **checkpoint 续训机制**。
 
-> Target task: learn a fast surrogate model that predicts a **64×64 temperature map** from a **power map** and a **layout mask**, so it can be used as a differentiable (or near-differentiable) *thermal guidance* signal in placement / diffusion-style optimization.
-
----
-
-## 1. What the model predicts (Output)
-
-**Output tensor:** `T_pred` with shape **(B, 1, 64, 64)**.
-
-- The network internally works on a 128×128 grid, then downsamples to 64×64.
-- In code:
-  - `ThermalGuidanceNet.forward(...)` produces a 128×128 map via `self.head`.
-  - Then it applies `avg_pool2d(kernel_size=2, stride=2)` to get 64×64.
-
-**Why 64×64?**
-- The dataset target temperature grid is 64×64 (`temp_grid_size=64` in `ThermalDataset`).
-- Predicting at the same resolution as the ground truth avoids unnecessary upsampling artifacts and simplifies loss computation.
-
-**Units:**
-- In training, `temp` is typically **normalized** by the dataset (see dataset stats in checkpoints).
-- At test time, if the checkpoint includes `stats = {temp_min, temp_max}`, the script can de-normalize back to **Kelvin** for visualization.
+> 目标任务：训练一个快速 surrogate model，从 **power map + layout mask** 预测 **64×64 温度场**，用于 placement / diffusion guidance。
 
 ---
 
-## 2. Model inputs (What goes into the network)
+## 1) 数据与归一化（ThermalDataset）
 
-The model is a CoordConv-style CNN that consumes **four input channels** at **128×128** resolution:
+数据加载在 `thermalmodel/dataLoader.py`。
 
-### 2.1 `power_grid`
-- **Shape:** (B, 1, 128, 128)
-- **Meaning:** spatial distribution of power density / power mapped to a grid.
+- `power` 与 `temp` 都做 **min-max 归一化到 [0,1]**（使用全数据集标量 min/max）：
+  - `p01 = (p - power_min) / (power_max - power_min)`
+  - `t01 = (t - temp_min) / (temp_max - temp_min)`
+- 因此 `ThermalDataset.__getitem__()` 返回的：
+  - `batch["power"]`：归一化后 `(B,1,128,128)`
+  - `batch["layout"]`：mask `(B,1,128,128)`（0/1）
+  - `batch["temp"]`：归一化后 `(B,1,64,64)`
 
-### 2.2 `layout_mask`
-- **Shape:** (B, 1, 128, 128)
-- **Meaning:** layout occupancy mask (usually 0/1), derived from floorplan (.flp) / chiplet placement.
+关键实现：`thermalmodel/dataLoader.py:214-220`。
 
-### 2.3 `x_coord_map` and `y_coord_map`
-- **Shape:** each is (B, 1, 128, 128)
-- **Values:** linearly spaced in **[-1, 1]**
-  - `x_coord_map`: constant across rows, increases left → right
-  - `y_coord_map`: constant across cols, increases top → bottom
-
-This makes the final input:
-
-```
-X = concat([power_grid, layout_mask, x_coord_map, y_coord_map], dim=1)
-X.shape = (B, 4, 128, 128)
-```
-
----
-
-## 3. Architecture overview (Structure)
-
-The network (`ThermalGuidanceNet`) is a lightweight encoder–decoder with skip connections (U-Net-like), built from **MobileNet-style inverted residual blocks** and **GroupNorm**:
-
-### 3.1 Key design goals
-- **Lightweight**: thermal inference should be fast for iterative guidance.
-- **Stable on small batches**: GroupNorm avoids BatchNorm instability.
-- **Quantization-friendly**: structure avoids BatchNorm and uses simple conv + pointwise + depthwise ops.
-
-### 3.2 Blocks used
-
-#### (A) `ConvGNAct`
-- `Conv2d(bias=False) → GroupNorm → SiLU`
-
-#### (B) `LiteInvertedResidual`
-MobileNetV3-style block:
-- optional expand (1×1)
-- depthwise 3×3
-- pointwise 1×1
-- GroupNorm + SiLU
-- residual connection if shape matches
-
-### 3.3 Encoder–decoder stages
-
-Input: (B, 4, 128, 128)
-
-- **Stem:** 3×3 conv → (B, base, 128, 128)
-
-**Encoder:**
-- `e1` keeps 128×128
-- `d1` downsamples 128→64 (channels base→2base)
-- `e2` keeps 64×64
-- `d2` downsamples 64→32 (2base→4base)
-- `e3` keeps 32×32
-- `d3` downsamples 32→16 (4base→8base)
-
-**Bottleneck:**
-- 16×16 at 8base channels
-
-**Decoder:**
-- nearest upsample (×2), reduce channels, concat skip, fuse conv
-- 16→32 (concat with encoder’s 32×32)
-- 32→64 (concat with encoder’s 64×64)
-- 64→128 (concat with encoder’s 128×128)
-
-**Head:** 1×1 conv → (B, 1, 128, 128)
-
-Then **avg-pool** to 64×64 output.
-
----
-
-## 4. Conditioning on total power (FiLM)
-
-Besides the spatial inputs, the model also takes `total_power`:
-
-- **Shape:** (B, 1)
-- **Usage:** FiLM modulation on bottleneck features.
-
-Mechanism:
-- A small MLP maps `total_power` → `(gamma, beta)` for each bottleneck channel.
-- Modulation: `z = z * (1 + gamma) + beta`
-
-**Why this helps for this task**
-- Thermal fields are strongly influenced by **global power scaling** and package-level boundary conditions.
-- Two layouts with similar spatial patterns but different total power may have similar *shape* but different absolute magnitude.
-- FiLM gives the network an explicit “global knob” to adjust feature magnitudes based on total power, improving generalization.
-
----
-
-## 5. Why include coordinate maps? (Task adaptation)
-
-A plain CNN is translation-equivariant: it tends to treat the same local pattern similarly everywhere.
-
-But thermal behavior on a chip is **not** perfectly translation-invariant:
-- Edges / corners can have different cooling behavior (boundary effects).
-- The same power blob near an edge may create a different hotspot than the same blob in the center.
-
-By injecting `(x, y)` coordinate channels, the network can learn **position-dependent responses** (boundary sensitivity) while staying fully convolutional.
-
----
-
-## 6. Loss function (Why it fits thermal maps)
-
-Training uses:
-
-- **MSE** between predicted temperature and target temperature.
-- plus **spatial gradient loss** (Sobel-based) with weight `grad_w`.
-
-Why the gradient term helps:
-- Thermal maps are smooth fields but important for placement is often the **shape and location of hotspots / gradients**.
-- A pure MSE can over-smooth peaks or misplace edges; matching spatial gradients encourages correct hotspot boundaries and spatial structure.
-
----
-
-## 7. Quantization support (QAT) and why it matters
-
-The model includes `QuantStub` and `DeQuantStub` and can optionally run **FX graph-mode QAT** (`--qat`).
-
-Why this is beneficial here:
-- Guidance is often called many times during sampling/optimization.
-- INT8 inference can reduce CPU latency and memory bandwidth.
-- The architecture avoids BatchNorm and uses simple conv blocks, which is generally friendlier to quantization.
-
-Notes:
-- Without `--qat`, training is standard floating-point.
-- With `--qat`, `prepare_qat_fx(...)` inserts fake-quant modules during training.
-- At checkpoint time, `convert_fx(...)` can export an INT8-converted model state dict.
-
----
-
-## 8. Summary: Why this design is a good fit
-
-- **Inputs reflect physics & placement constraints**: power + occupancy mask + coordinates + total power.
-- **U-Net-like multi-scale processing**: captures both local hotspots and global diffusion.
-- **CoordConv + FiLM**: explicitly models boundary effects and global power scaling.
-- **Gradient-aware loss**: preserves hotspot structure, not just per-pixel values.
-- **QAT-ready**: supports fast deployment for iterative guidance loops.
-
----
-
-## 9. Quick reference (I/O)
-
-**Forward signature**
+### 反归一化（回到 Kelvin）
+若要把网络输出/GT 从 [0,1] 还原到 Kelvin（K）：
 
 ```python
-pred = model(power_grid, layout_mask, total_power)
+T = t01 * (temp_max - temp_min) + temp_min
 ```
 
-**Shapes**
-- `power_grid`: (B, 1, 128, 128)
-- `layout_mask`: (B, 1, 128, 128)
-- `total_power`: (B, 1)
-- `pred`: (B, 1, 64, 64)
+在当前 `guidance_model.py` 的 `test` 中：
+- **反归一化使用 `dataset.stats.temp_min/temp_max`**（与数据加载一致）。
 
+---
+
+## 2) 模型输入/输出
+
+### 输入
+模型采用 CoordConv 思路，最终输入通道为 4：
+
+- `power_grid`: `(B,1,128,128)`
+- `layout_mask`: `(B,1,128,128)`
+- `x_coord_map`: `(B,1,128,128)`，线性分布在 [-1,1]
+- `y_coord_map`: `(B,1,128,128)`，线性分布在 [-1,1]
+
+拼接后：
+
+```text
+X = concat([power_grid, layout_mask, xmap, ymap], dim=1)
+X.shape = (B,4,128,128)
+```
+
+### 输出
+- `T_pred`: `(B,1,64,64)`
+- 训练时输出与标签 `temp` 在同一尺度（归一化 [0,1]）。
+- 测试/可视化时可以反归一化到 K。
+
+---
+
+## 3) 网络结构：ThermalGuidanceNet（当前版本）
+
+当前 `ThermalGuidanceNet` 是对称 U-Net 风格结构，核心目标是增强热扩散任务所需的全局感受野。
+
+### 关键模块
+
+- `ConvGNAct`: Conv2d + GroupNorm + GELU
+- `LargeKernelBlock`: 7×7 depthwise conv 的残差块（扩大感受野，用于扩散/全局耦合）
+- `ASPP`: Atrous Spatial Pyramid Pooling（dilation=2/4/6）捕捉多尺度上下文
+
+### 分辨率路径（对齐 64×64 目标网格）
+
+- **Stem**：`128×128 → 64×64`（stride=2），从一开始就对齐温度标签分辨率
+- **Encoder**：`64→32→16→8`
+- **Bottleneck**：LargeKernel + ASPP + LargeKernel
+- **Decoder**：`8→16→32→64`，与 encoder 同尺度 skip concat 融合
+- **Head**：输出 1 通道 `64×64`
+
+---
+
+## 4) 损失函数：guidance_loss
+
+用于回归温度场，并同时强调热点与物理平滑性。
+
+组成：
+
+1. **Hotspot-aware weighted L1**（主损失）
+2. **Gradient loss（Sobel）**：约束一阶梯度，使热点边界更准确
+3. **Laplacian loss（physics-informed）**：约束二阶导（拉普拉斯），贴近热传导/泊松方程先验
+
+总损失：
+
+```text
+loss = weighted_l1 + grad_w * grad_loss + 0.05 * laplacian_loss
+```
+
+训练时会打印/记录：`l1, mse(监控), grad, lap, loss`。
+
+---
+
+## 5) 训练（train）
+
+- Optimizer：`AdamW(lr=args.lr, weight_decay=1e-4)`
+- Scheduler：`CosineAnnealingLR(T_max=args.epochs)`
+
+### 从头训练示例（100 epochs）
+
+```bash
+python /root/placement/flow_GCN/thermalmodel/guidance_model.py train \
+  --epochs 100 --batch_size 8 --lr 5e-4 --base 64 --grad_w 0.1 \
+  --ckpt_every 10 --print_every 10
+```
+
+---
+
+## 6) Checkpoint 设计与续训练（resume）
+
+训练保存的 `.pth` checkpoint（在 `thermalmodel/checkpoints/`）包含：
+
+- `epoch`: 当前 epoch
+- `model`: `state_dict`
+- `opt`: optimizer state
+- `scheduler`: scheduler state（**必须有，用于严格续训**）
+- `stats`: 数据集 min/max（用于 test 阶段反归一化到 K）
+- `train_args`: 记录训练参数（含 epochs/lr/base/grad_w 等）
+
+### 严格续训
+当前代码 **不兼容缺少 `scheduler` 字段的旧 checkpoint**：
+- 若 `--resume_ckpt` 指向的 `.pth` 没有 `scheduler`，会直接报错。
+
+续训示例：
+
+```bash
+python /root/placement/flow_GCN/thermalmodel/guidance_model.py train \
+  --resume_ckpt /root/placement/flow_GCN/thermalmodel/checkpoints/xxx.pth \
+  --epochs 200 --batch_size 8 --lr 5e-4 --base 64 --grad_w 0.1
+```
+
+---
+
+## 7) 测试与绘图（test）
+
+测试流程：
+
+1. 推理得到 `pred_norm`（[0,1]）与 `gt_norm`（[0,1]）
+2. 使用 `dataset.stats.temp_min/temp_max` 反归一化得到 `pred_K/gt_K`
+3. 在 **K 尺度**上计算并打印：
+   - `max_rmse / min_rmse / mean_rmse`
+   - `max_ae`
+   - `mean_rmspe`（%）
+4. 选取 RMSE 最差样本，绘制 pred/gt 热图（单位 K）
+
+示例：
+
+```bash
+python /root/placement/flow_GCN/thermalmodel/guidance_model.py test \
+  --ckpt /root/placement/flow_GCN/thermalmodel/checkpoints/xxx.pth \
+  --batch_size 8 \
+  --out_fig_dir /root/placement/flow_GCN/thermalmodel/test_result/test_guidance_fig
+```
+
+绘图函数：`thermalmodel/draw_thermal_fig.py:plot_thermal_grid_overlay()`。
