@@ -27,7 +27,15 @@ try:
 except ImportError:
     gp = None
 
-from placement.flow_GCN.Dataset.dataset.input_preprocess import build_chiplet_table, load_chiplets_json
+try:
+    # 当以 placement.flow_GCN 作为顶层包安装/运行时
+    from placement.flow_GCN.Dataset.dataset.input_preprocess import build_chiplet_table, load_chiplets_json
+except ModuleNotFoundError:
+    # 当直接在本仓库中运行脚本时（Dataset/dataset 作为当前目录或包的一部分）
+    try:
+        from .input_preprocess import build_chiplet_table, load_chiplets_json  # type: ignore
+    except Exception:
+        from input_preprocess import build_chiplet_table, load_chiplets_json
 
 # 导入ILP相关的类型（如果可用）
 try:
@@ -892,7 +900,7 @@ def generate_placement_json_with_EMIB(
 
     x-position、y-position、EMIB_length、EMIB_width、EMIB-rotation 必须从 ctx 的 ILP 变量
     (EMIB_x_grid_var, EMIB_y_grid_var, EMIB_w_var, EMIB_h_var, r_EMIB) 中读取；
-    若 ctx 无 EMIB 变量，则回退到 result.emib_placements。
+    若 ctx 无 EMIB 变量，则回退到 result.placements（兼容旧字段 result.emib_placements）。
 
     参数
     ----
@@ -921,6 +929,50 @@ def generate_placement_json_with_EMIB(
 
     def _r3(v):
         return round(float(v or 0), 3)
+
+    def _rects_overlap_xywh(
+        ax: float,
+        ay: float,
+        aw: float,
+        ah: float,
+        bx: float,
+        by: float,
+        bw: float,
+        bh: float,
+    ) -> bool:
+        # touching edges is allowed (no overlap)
+        if ax + aw <= bx:
+            return False
+        if bx + bw <= ax:
+            return False
+        if ay + ah <= by:
+            return False
+        if by + bh <= ay:
+            return False
+        return True
+
+    def _assert_no_overlap_chiplets(chiplets: list) -> None:
+        rects = []
+        for c in chiplets:
+            rects.append(
+                (
+                    str(c.get("name")),
+                    float(c.get("x-position", 0.0) or 0.0),
+                    float(c.get("y-position", 0.0) or 0.0),
+                    float(c.get("width", 0.0) or 0.0),
+                    float(c.get("height", 0.0) or 0.0),
+                )
+            )
+        rects.sort(key=lambda t: (t[0], t[1], t[2]))
+        for i in range(len(rects)):
+            ni, xi, yi, wi, hi = rects[i]
+            for j in range(i + 1, len(rects)):
+                nj, xj, yj, wj, hj = rects[j]
+                if _rects_overlap_xywh(xi, yi, wi, hi, xj, yj, wj, hj):
+                    raise RuntimeError(
+                        f"Illegal placement: overlap detected between {ni} and {nj}: "
+                        f"{ni}=(x={xi},y={yi},w={wi},h={hi}), {nj}=(x={xj},y={yj},w={wj},h={hj})"
+                    )
 
     layout = result.layout if hasattr(result, "layout") else {}
     rotations = result.rotations if hasattr(result, "rotations") else {}
@@ -952,6 +1004,8 @@ def generate_placement_json_with_EMIB(
             "power": _r3(power),
         })
 
+    _assert_no_overlap_chiplets(chiplets_list)
+
     connections_list = []
     emib_connected = getattr(ctx, "EMIB_connected_pairs", None) if ctx else None
     emib_has_vars = emib_connected and getattr(ctx, "EMIB_x_grid_var", None)
@@ -981,10 +1035,13 @@ def generate_placement_json_with_EMIB(
                 "EMIB-rotation": 1 if er else 0,
             })
     else:
-        print("result.emib_placements is None")
-        result_emib = getattr(result, "emib_placements", None) if result else None
-        if result_emib:
-            for emp in result_emib:
+        # 非 ILP(无 ctx EMIB 变量) 时：允许用 result.placements（优先）或旧字段 result.emib_placements（兼容）
+        result_placements = getattr(result, "placements", None) if result else None
+        if result_placements is None:
+            result_placements = getattr(result, "emib_placements", None) if result else None
+
+        if result_placements:
+            for emp in result_placements:
                 na, nb = emp.get("node1"), emp.get("node2")
                 a, b = (na, nb) if na <= nb else (nb, na)
                 edge = edge_map.get((a, b), {})
@@ -1072,6 +1129,50 @@ def generate_placement_json(
     def _r3(v):
         return round(float(v or 0), 3)
 
+    def _rects_overlap_xywh(
+        ax: float,
+        ay: float,
+        aw: float,
+        ah: float,
+        bx: float,
+        by: float,
+        bw: float,
+        bh: float,
+    ) -> bool:
+        # touching edges is allowed (no overlap)
+        if ax + aw <= bx:
+            return False
+        if bx + bw <= ax:
+            return False
+        if ay + ah <= by:
+            return False
+        if by + bh <= ay:
+            return False
+        return True
+
+    def _assert_no_overlap_chiplets(chiplets: list) -> None:
+        rects = []
+        for c in chiplets:
+            rects.append(
+                (
+                    str(c.get("name")),
+                    float(c.get("x-position", 0.0) or 0.0),
+                    float(c.get("y-position", 0.0) or 0.0),
+                    float(c.get("width", 0.0) or 0.0),
+                    float(c.get("height", 0.0) or 0.0),
+                )
+            )
+        rects.sort(key=lambda t: (t[0], t[1], t[2]))
+        for i in range(len(rects)):
+            ni, xi, yi, wi, hi = rects[i]
+            for j in range(i + 1, len(rects)):
+                nj, xj, yj, wj, hj = rects[j]
+                if _rects_overlap_xywh(xi, yi, wi, hi, xj, yj, wj, hj):
+                    raise RuntimeError(
+                        f"Illegal placement: overlap detected between {ni} and {nj}: "
+                        f"{ni}=(x={xi},y={yi},w={wi},h={hi}), {nj}=(x={xj},y={yj},w={wj},h={hj})"
+                    )
+
     layout = result.layout if hasattr(result, "layout") else {}
     rotations = result.rotations if hasattr(result, "rotations") else {}
     bbox = getattr(result, "bounding_box", (0, 0))
@@ -1101,6 +1202,8 @@ def generate_placement_json(
             "rotation": rot,
             "power": _r3(power),
         })
+
+    _assert_no_overlap_chiplets(chiplets_list)
 
     connections_list = []
     for emp in post.get("emib_placements", []):
@@ -1797,10 +1900,10 @@ def draw_chiplet_diagram(
     anchor: Dict[str, Tuple[float, float]] = {}
 
     # 调试：检查layout和nodes
-    print(f"[DEBUG 绘图] nodes数量: {len(nodes)}, layout中的chiplet数量: {len(layout)}")
+    # print(f"[DEBUG 绘图] nodes数量: {len(nodes)}, layout中的chiplet数量: {len(layout)}")
     missing_in_layout = [n.name for n in nodes if n.name not in layout]
     if missing_in_layout:
-        print(f"[DEBUG 绘图] 以下chiplet不在layout中: {missing_in_layout}")
+        print(f"[警告] 以下chiplet不在layout中，将跳过绘制: {missing_in_layout}")
 
     # 1) 画 chiplet 方框和 phys 锚点
     drawn_count = 0
@@ -1815,7 +1918,7 @@ def draw_chiplet_diagram(
         origin_y = float(y_grid) * grid_size
         
         drawn_count += 1
-        print(f"[DEBUG 绘图] 绘制 {node.name}: 网格坐标=({x_grid:.2f}, {y_grid:.2f}), 实际坐标=({origin_x:.2f}, {origin_y:.2f})")
+        # print(f"[DEBUG 绘图] 绘制 {node.name}: 网格坐标=({x_grid:.2f}, {y_grid:.2f}), 实际坐标=({origin_x:.2f}, {origin_y:.2f})")
         
         # 获取原始尺寸
         orig_w = float(node.dimensions.get("x", 0.0))
@@ -1916,9 +2019,9 @@ def draw_chiplet_diagram(
                 edge_type_map[(dst, src)] = "normal"  # 双向
     
     # 调试输出：打印边类型映射
-    print(f"[DEBUG 绘图] 边类型映射:")
-    for (src, dst), etype in edge_type_map.items():
-        print(f"  ({src}, {dst}): {etype}")
+    # print(f"[DEBUG 绘图] 边类型映射:")
+    # for (src, dst), etype in edge_type_map.items():
+    #     print(f"  ({src}, {dst}): {etype}")
     
     for edge in edges:
         # 处理不同格式的边

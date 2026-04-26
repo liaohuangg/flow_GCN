@@ -1,166 +1,216 @@
 #!/usr/bin/env python3
-"""
-EMIB 芯粒布局可视化脚本（无固定芯粒）。
+"""visualize_layout.py
 
-从 Gurobi ILP 求解结果提取数据，绘制：
-- 芯粒矩形（灰色，标注 ID 与 power）
-- 硅桥中心点（红色圆点）
-- 蓝色细线互联（路径：芯粒 16x16 网格点 → 硅桥中心点 → 目标芯粒网格点）
+只做一件事：
+- 读入 *已生成的布局* JSON（例如 output/placement/system_10426.json）
+- 直接可视化并保存图片
 
-用法:
-  python visualize_emib_layout.py --input <json_path> [--output <png|svg>] [--show]
-  或作为模块调用 run_visualization(...)
+不进行 ILP 求解，不依赖 Gurobi。
+
+输入 JSON 期望格式（最少字段）：
+{
+  "chiplets": [
+    {"name": "A", "x-position": 0.0, "y-position": 0.0, "width": 10.0, "height": 5.0, "power": 12.0},
+    ...
+  ],
+  "connections": [
+    {"node1": "A", "node2": "B", "wireCount": 128, ...},
+    ...
+  ]
+}
+
+用法：
+  python visualize_layout.py \
+    --input /root/placement/flow_GCN/Dataset/dataset/output/placement/system_10426.json \
+    --output-dir /root/placement/flow_GCN/Dataset/dataset/output/fig
+
+输出：
+  output-dir/<stem>.png  （默认）
 """
+
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional
 
-def draw_from_solution(
-    result,
-    post: Optional[dict],
-    nodes: list,
-    edge_map: dict,
-    save_path: str,
-    title: str = "EMIB Chiplet Layout",
-    save_format: str = "png",
-    show: bool = False,
-    figsize: Tuple[float, float] = (10, 8),
-    display_grid_size: Optional[int] = 4,
-    ctx=None,
-) -> dict:
-    """
-    根据已有求解结果直接生成布局图（不重新求解）。
-    post 为 None 时，若提供 ctx 且含 EMIB 变量，则从 ctx 提取硅桥位置。
-    
-    参数
-    ----
-    result : ILPPlacementResult
-        求解结果
-    post : dict | None
-        run_emib_post_process 返回值；可为 None
-    nodes : list
-        芯粒列表
-    edge_map : dict
-        边映射
-    save_path : str
-        图片保存路径
-    ctx : 可选，ILP 上下文；post 为 None 时从此提取 emib_placements
-    
-    返回
-    ----
-    dict
-        结构化输出
-    """
-    from tool import extract_layout_data_for_vis, draw_emib_layout_diagram
 
-    vis_data = extract_layout_data_for_vis(result, post, nodes, edge_map, ctx=ctx)
-    return draw_emib_layout_diagram(
-        chiplet_layout=vis_data["chiplet_layout"],
-        chiplet_dims=vis_data["chiplet_dims"],
-        emib_placements=vis_data["emib_placements"],
-        emib_connections=vis_data["emib_connections"],
-        chiplet_power=vis_data.get("chiplet_power"),
-        title=title,
-        show_axes=True,
-        save_path=save_path,
-        save_format=save_format,
-        show=show,
-        figsize=figsize,
-        display_grid_size=display_grid_size,
-    )
+def _import_tool_from_same_dir() -> Tuple[object, object]:
+    """确保可以从本目录导入 tool.py，并在导入 pyplot 前强制使用 Agg 后端。"""
 
-
-# 需在 thermal-placement 项目环境下运行（含 Gurobi）
-def run_visualization(
-    input_json_path: str,
-    output_path: Optional[str] = None,
-    save_format: str = "png",
-    show: bool = False,
-    title: str = "EMIB Chiplet Layout",
-    display_grid_size: Optional[int] = 4,
-) -> dict:
-    """
-    运行完整可视化流程：加载 JSON → ILP 求解 → 后处理 → 绘图。
-    
-    参数
-    ----
-    input_json_path : str
-        输入 JSON 路径（含 chiplets, connections）
-    output_path : str | None
-        输出图片路径，None 则使用默认 output_gurobi_compact/fig/<stem>_emib_vis.png
-    save_format : str
-        保存格式，如 "png", "svg"
-    show : bool
-        是否弹出显示窗口
-    title : str
-        图形标题
-    
-    返回
-    ----
-    dict
-        结构化输出: emib_coords, wire_start_end, emib_edge_centers
-    """
     import sys
-    sys.path.insert(0, str(Path(__file__).parent))
-    from tool import (
-        load_emib_placement_json,
-        run_emib_post_process,
-        extract_layout_data_for_vis,
-        draw_emib_layout_diagram,
+
+    script_dir = Path(__file__).parent.resolve()
+    if str(script_dir) not in sys.path:
+        sys.path.insert(0, str(script_dir))
+
+    # 避免在无 GUI 环境触发 Qt/Wayland 后端问题
+    import matplotlib
+
+    matplotlib.use("Agg")
+
+    from tool import ChipletNode, draw_chiplet_diagram  # type: ignore
+
+    return ChipletNode, draw_chiplet_diagram
+
+
+def visualize_placement_json(
+    placement_json_path: str,
+    output_path: Optional[str] = None,
+    output_dir: Optional[str] = None,
+    save_format: str = "png",
+    show: bool = False,
+    title: Optional[str] = None,
+) -> str:
+    """读取 output/placement 的布局 JSON 并生成图片。
+
+    返回生成图片路径。
+    """
+
+    ChipletNode, draw_chiplet_diagram = _import_tool_from_same_dir()
+
+    p = Path(placement_json_path)
+    with p.open("r", encoding="utf-8") as f:
+        data = json.load(f)
+
+    chiplets = data.get("chiplets", [])
+    if not isinstance(chiplets, list) or not chiplets:
+        raise ValueError(f"layout JSON 格式错误：缺少 chiplets 列表。文件: {placement_json_path}")
+
+    nodes: List[object] = []
+    layout: Dict[str, Tuple[float, float]] = {}
+    labels: Dict[str, str] = {}
+
+    for c in chiplets:
+        if not isinstance(c, dict):
+            raise ValueError(f"layout JSON 格式错误：chiplets 元素必须是对象。当前: {c}")
+
+        name = c.get("name")
+        x = c.get("x-position")
+        y = c.get("y-position")
+        w = c.get("width")
+        h = c.get("height")
+        power = float(c.get("power", 0) or 0)
+
+        if name is None or x is None or y is None or w is None or h is None:
+            raise ValueError(f"layout JSON chiplet 字段不完整: {c}")
+
+        name_s = str(name)
+        nodes.append(
+            ChipletNode(
+                name=name_s,
+                dimensions={"x": float(w), "y": float(h)},
+                phys=[],
+                power=power,
+            )
+        )
+        layout[name_s] = (float(x), float(y))
+        labels[name_s] = f"{name_s}\nP={power:g}"
+
+    # 可选：从 layout JSON 里读取 connections 画箭头（如果为空则只画块）
+    edges = []
+    conns = data.get("connections", [])
+    if isinstance(conns, list):
+        for conn in conns:
+            if not isinstance(conn, dict):
+                continue
+            n1, n2 = conn.get("node1"), conn.get("node2")
+            if n1 is None or n2 is None:
+                continue
+            edges.append((str(n1), str(n2)))
+
+    if output_path is None:
+        out_dir = Path(output_dir) if output_dir else p.parent
+        out_dir.mkdir(parents=True, exist_ok=True)
+        output_path = str(out_dir / f"{p.stem}.{save_format}")
+
+    out = Path(output_path)
+    out.parent.mkdir(parents=True, exist_ok=True)
+
+    # draw_chiplet_diagram 的标题在 tool.py 内部没有单独参数，这里先不强加。
+    # 如果你确实需要 title，建议在 tool.draw_chiplet_diagram 里加参数（再单独改）。
+    _ = title
+
+    draw_chiplet_diagram(
+        nodes=nodes,
+        edges=edges,
+        save_path=str(out),
+        layout=layout,
+        labels=labels,
+        grid_size=1.0,
+        rotations=None,  # placement JSON 里 width/height 已经是最终尺寸，不做二次旋转
     )
-    from ilp_method_compact import build_placement_ilp_model
-    from ilp_EMIB_search_compact import _solve_once_with_gap
 
-    nodes, edges, edge_map, name_to_idx = load_emib_placement_json(input_json_path)
-    min_w = min(float(n.dimensions.get("x", 0)) for n in nodes)
-    min_h = min(float(n.dimensions.get("y", 0)) for n in nodes)
-    for e in edges:
-        e["EMIB_max_width"] = min(e["EMIB_max_width"], min_w, min_h)
+    if show:
+        import matplotlib.pyplot as plt
 
-    ctx = build_placement_ilp_model(nodes=nodes, edges=edges, verbose=False)
-    result = _solve_once_with_gap(ctx=ctx, nodes=nodes, gap=0, time_limit=120)
-    if result.status not in ("Optimal", "Feasible"):
-        raise RuntimeError(f"ILP 求解失败: {result.status}")
+        plt.show()
 
-    post = run_emib_post_process(ctx=ctx, result=result, nodes=nodes, edge_map=edge_map, name_to_idx=name_to_idx)
-    vis_data = extract_layout_data_for_vis(result, post, nodes, edge_map)
-    out_path = output_path or str(Path(input_json_path).stem + "_emib_vis." + save_format)
-    struct = draw_emib_layout_diagram(
-        chiplet_layout=vis_data["chiplet_layout"],
-        chiplet_dims=vis_data["chiplet_dims"],
-        emib_placements=vis_data["emib_placements"],
-        emib_connections=vis_data["emib_connections"],
-        chiplet_power=vis_data.get("chiplet_power"),
-        title=title,
-        show_axes=True,
-        save_path=out_path,
-        save_format=save_format,
-        show=show,
-        display_grid_size=4,
+    return str(out)
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser(description="Read placement JSON and visualize layout")
+
+    src = parser.add_mutually_exclusive_group(required=True)
+    src.add_argument("--input", "-i", default=None, help="输入单个布局 JSON（output/placement/system_i.json）")
+    src.add_argument("--start", type=int, default=None, help="批量绘图起始 id（包含）")
+
+    parser.add_argument("--end", type=int, default=None, help="批量绘图结束 id（包含，与 --start 配合）")
+    parser.add_argument(
+        "--input-dir",
+        default=None,
+        help="批量绘图的输入目录（默认: <script_dir>/output/placement）",
     )
-    return struct
+
+    parser.add_argument("--output", "-o", default=None, help="输出图片完整路径（仅单文件模式优先级最高）")
+    parser.add_argument("--output-dir", default=None, help="输出目录（自动命名为 <stem>.<format>）")
+    parser.add_argument("--format", "-f", default="png", choices=["png", "svg"], help="保存格式")
+    parser.add_argument("--show", action="store_true", help="显示图形窗口（批量模式不建议）")
+    parser.add_argument("--title", default=None, help="预留参数（当前不生效）")
+    args = parser.parse_args()
+
+    script_dir = Path(__file__).parent.resolve()
+
+    if args.input is not None:
+        out = visualize_placement_json(
+            placement_json_path=args.input,
+            output_path=args.output,
+            output_dir=args.output_dir,
+            save_format=args.format,
+            show=args.show,
+            title=args.title,
+        )
+        print(out)
+        return
+
+    # batch mode
+    if args.start is None or args.end is None:
+        raise SystemExit("批量绘图需要同时提供 --start 和 --end")
+    if args.end < args.start:
+        raise SystemExit("--end 必须 >= --start")
+
+    in_dir = Path(args.input_dir).resolve() if args.input_dir else (script_dir / "output" / "placement")
+    out_dir = Path(args.output_dir).resolve() if args.output_dir else (script_dir / "output" / "fig")
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    for i in range(int(args.start), int(args.end) + 1):
+        inp = in_dir / f"system_{i}.json"
+        if not inp.exists():
+            print(f"[skip] missing: {inp}")
+            continue
+        out_path = out_dir / f"system_{i}.{args.format}"
+        out = visualize_placement_json(
+            placement_json_path=str(inp),
+            output_path=str(out_path),
+            output_dir=None,
+            save_format=args.format,
+            show=False,  # batch mode: avoid GUI
+            title=args.title,
+        )
+        print(out)
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="EMIB 布局可视化")
-    parser.add_argument("--input", "-i", required=True, help="输入 JSON 路径")
-    parser.add_argument("--output", "-o", help="输出图片路径")
-    parser.add_argument("--format", "-f", default="png", choices=["png", "svg"], help="保存格式")
-    parser.add_argument("--show", action="store_true", help="显示图形窗口")
-    parser.add_argument("--title", default="EMIB Chiplet Layout", help="图形标题")
-    parser.add_argument(
-        "--grid-size", "-g", type=int, default=4,
-        help="蓝线网格规模：16 为 16x16=256 条，4 为 4x4=16 条（每块中心），默认 4",
-    )
-    args = parser.parse_args()
-    run_visualization(
-        input_json_path=args.input,
-        output_path=args.output,
-        save_format=args.format,
-        show=args.show,
-        title=args.title,
-        display_grid_size=args.grid_size,
-    )
-    print("可视化完成")
+    main()
