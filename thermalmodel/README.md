@@ -158,3 +158,158 @@ python /root/placement/flow_GCN/thermalmodel/guidance_model.py test \
 ```
 
 绘图函数：`thermalmodel/draw_thermal_fig.py:plot_thermal_grid_overlay()`。
+
+---
+
+## 8) 三种训练/量化方式（FP32 / QAT / PTQ-fp16）
+
+本仓库目前提供 3 套流程，覆盖 **训练精度** 与 **GPU 推理加速（fp16）** 两类需求：
+
+1) **FP32 训练（不做量化）**：基线/最高精度；也是后续 PTQ-fp16 的来源。
+2) **QAT 训练（训练时量化感知）**：训练阶段插入 fake-quant/observer，让模型参数在训练中“看到”量化误差（当前主要用于对齐实验/保留路径；仓库不再提供 int8 PTQ 导出）。
+3) **PTQ（训练后导出：fp16）**：从一个 FP32 checkpoint 导出 fp16 权重，用于 GPU 推理加速/省显存。
+
+> 说明：下面命令中的超参仅为示例；以你的实际实验配置为准。
+>
+> 当前代码会把 `ep/seed/bs/lr/base/grad_w` 写入 checkpoint 文件名，方便对比实验。
+
+### 8.1 FP32 训练（不做量化）
+
+**是什么**：标准浮点训练（默认 fp32），不插入任何量化模块。
+
+**适用场景**：
+- 追求最优精度（作为基线）
+- 需要一个“干净”的 FP32 checkpoint 作为后续 PTQ-fp16 的输入
+
+**命令（直接训练）**：
+
+```bash
+python /root/placement/flow_GCN/thermalmodel/guidance_model.py train \
+  --epochs 200 \
+  --batch_size 8 \
+  --lr 5e-4 \
+  --base 64 \
+  --grad_w 0.1 \
+  --seed 0 \
+  --ckpt_every 5 \
+  --print_every 10 \
+  --ckpt_tag fp32 \
+  --out_dir /root/placement/flow_GCN/thermalmodel/checkpoints/fp32
+```
+
+**产物**：
+- FP32 checkpoint（示例）：
+  - `checkpoints/fp32/guidance_net_fp32_ep0200_seed0_bs8_lr5e-04_base64_gw0p1.pth`
+
+---
+
+### 8.2 QAT 训练（Quantization-Aware Training，训练时量化感知）
+
+**是什么**：训练阶段在计算图中插入 observer / fake-quant（FX graph mode），让训练过程显式感知量化误差。
+
+**适用场景**：
+- 你需要保留/对齐 QAT 实验流程（例如做 ablation 或复现实验设置）
+- 当前仓库目标仍以 **GPU fp16/AMP** 为主
+
+**实现要点（当前代码）**：
+- `--qat` 会走 `torch.ao.quantization.quantize_fx.prepare_qat_fx(...)`
+- 训练保存的主 checkpoint 仍是“训练态”（包含 fake-quant/observer 结构的 state_dict）
+
+**命令（QAT 训练）**：
+
+```bash
+python /root/placement/flow_GCN/thermalmodel/guidance_model.py train \
+  --epochs 200 \
+  --batch_size 8 \
+  --lr 5e-4 \
+  --base 64 \
+  --grad_w 0.1 \
+  --seed 0 \
+  --ckpt_every 5 \
+  --print_every 10 \
+  --qat \
+  --ckpt_tag qat \
+  --out_dir /root/placement/flow_GCN/thermalmodel/checkpoints/qat
+```
+
+**产物**：
+- QAT 训练态 checkpoint（示例）：
+  - `checkpoints/qat/guidance_net_qat_ep0200_seed0_bs8_lr5e-04_base64_gw0p1.pth`
+
+---
+
+### 8.3 PTQ（Post-Training Quantization，训练后导出：fp16）
+
+**是什么**：从一个训练好的 FP32 checkpoint 导出 **fp16 权重**（不需要校准数据），用于 GPU 推理加速/省显存。
+
+**适用场景**：
+- 目标是 GPU 推理（优先 fp16）
+- 不需要 int8
+
+**命令（从 FP32 checkpoint 导出 fp16）**：
+
+```bash
+python /root/placement/flow_GCN/thermalmodel/guidance_pipeline.py export_ptq \
+  --src_ckpt /root/placement/flow_GCN/thermalmodel/checkpoints/fp32/<YOUR_FP32_CKPT>.pth \
+  --out_dir /root/placement/flow_GCN/thermalmodel/checkpoints/ptq
+```
+
+**产物**：
+- fp16 checkpoint（示例）：
+  - `checkpoints/ptq/<YOUR_FP32_CKPT>_fp16.pth`
+
+---
+
+## 9) 一键自动化脚本（推荐）
+
+在 `thermalmodel/` 目录下提供了 shell 脚本：
+
+- `auto_train_guidance.sh`
+
+它会按顺序执行：fp32 训练 → QAT 训练 → 从 fp32 最终 epoch checkpoint 导出 fp16。
+
+**默认一键运行**：
+
+```bash
+cd /root/placement/flow_GCN/thermalmodel
+./auto_train_guidance.sh
+```
+
+**改参数示例**：
+
+```bash
+./auto_train_guidance.sh --seed 1 --lr 3e-4 --base 32 --epochs 200 --ckpt-every 5
+```
+
+**只跑 fp32**：
+
+```bash
+./auto_train_guidance.sh --no-qat --no-ptq
+```
+
+---
+
+## 10) GPU 混合精度（AMP / fp16m / bf16）
+
+如果目标是 **GPU 上更快/更省显存**，优先考虑 AMP。
+
+- `fp16m` 通常指 **混合精度训练（mixed precision）**：大部分算子用 fp16/bf16 计算，但保留必要部分为 fp32（例如某些累加、以及 fp16 下用 GradScaler 避免下溢）。
+- 本仓库在 `guidance_model.py train` 提供：
+  - `--amp`：开启 CUDA AMP
+  - `--amp_dtype {fp16|bf16}`：选择 autocast 的 dtype
+
+**推荐（大多数 NVIDIA GPU）：fp16 AMP**
+
+```bash
+python /root/placement/flow_GCN/thermalmodel/guidance_model.py train \
+  --epochs 200 --batch_size 8 --lr 5e-4 --base 64 --grad_w 0.1 --seed 0 \
+  --ckpt_every 5 --print_every 10 \
+  --ckpt_tag fp32 --out_dir /root/placement/flow_GCN/thermalmodel/checkpoints/fp32 \
+  --amp --amp_dtype fp16
+```
+
+**也可以用脚本一键开启**：
+
+```bash
+./auto_train_guidance.sh --amp --amp-dtype fp16
+```

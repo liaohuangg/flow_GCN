@@ -34,3 +34,5 @@ ChipletFM/wandb/
 ChipletFM/datasets/graph/v*/
 ChipletFM/new_fm/dataset/
 Dataset/dataset/output/placement/system_*.json
+
+**/*.pyc

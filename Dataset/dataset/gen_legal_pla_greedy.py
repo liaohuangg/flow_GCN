@@ -800,8 +800,8 @@ def _place_one_case(
             "H": float(outH),
         }
 
-    best_nonoverlap: Optional[dict] = None
-    best_nonoverlap_score: Optional[Tuple[float, float, float]] = None
+    best: Optional[dict] = None
+    best_score: Optional[Tuple[float, float, float]] = None
     satisfied = False
 
     for _att in range(max_attempts):
@@ -812,12 +812,9 @@ def _place_one_case(
             -float(attempt["aspect"]),
             float(attempt["wirelength"]),
         )
-
-        # HARD constraint: overlaps are absolutely illegal.
-        if not attempt["overlap"]:
-            if best_nonoverlap is None or score < (best_nonoverlap_score or score):
-                best_nonoverlap = attempt
-                best_nonoverlap_score = score
+        if best is None or score < (best_score or score):
+            best = attempt
+            best_score = score
 
         ok = (
             (not attempt["overlap"])
@@ -827,14 +824,6 @@ def _place_one_case(
         if ok:
             satisfied = True
             break
-
-        # If we still overlap, just grow both sides deterministically.
-        if attempt["overlap"]:
-            W *= outline_grow
-            H *= outline_grow
-            W = max(W, guard)
-            H = max(H, guard)
-            continue
 
         # deterministic outline growth: if aspect is too small, grow the tighter (smaller) side
         bw = float(attempt["bbox_w"])
@@ -853,16 +842,14 @@ def _place_one_case(
         W = max(W, guard)
         H = max(H, guard)
 
-    if best_nonoverlap is None:
-        raise RuntimeError("placement failed: could not produce a legal (non-overlapping) layout")
-
-    best = best_nonoverlap
+    if best is None:
+        raise RuntimeError("placement failed: no attempts")
 
     if not satisfied:
         # Keep output stable and quiet: only one warning per case.
         print(
-            f"[gen_legal_pla_greedy] WARNING: compactness/aspect constraints not met; "
-            f"bbox_area={best['bbox_area']:.3f} (limit {area_limit:.3f}), "
+            f"[gen_legal_pla_greedy] WARNING: constraints not met; "
+            f"best bbox_area={best['bbox_area']:.3f} (limit {area_limit:.3f}), "
             f"aspect={best['aspect']:.3f} (min {min_aspect:.3f})."
         )
 
@@ -943,3 +930,7 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+'''
+
+python gen_legal_pla_greedy.py --start 11026 --end 65999
+'''

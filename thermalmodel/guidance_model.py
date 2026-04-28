@@ -272,7 +272,7 @@ def _denorm_temp_k(x01: torch.Tensor, st: _Stats) -> torch.Tensor:
 
 
 def main_train(args) -> None:
-    torch.manual_seed(0)
+    torch.manual_seed(args.seed)
     device = _device()
 
     dataset = ThermalDataset(
@@ -285,7 +285,7 @@ def main_train(args) -> None:
     n_total = len(dataset)
     n_train = int(n_total * 0.9)
     n_val = n_total - n_train
-    gen = torch.Generator().manual_seed(0)
+    gen = torch.Generator().manual_seed(args.seed)
     train_set, val_set = torch.utils.data.random_split(dataset, [n_train, n_val], generator=gen)
 
     train_loader = torch.utils.data.DataLoader(train_set, batch_size=args.batch_size, shuffle=True, num_workers=0)
@@ -316,8 +316,10 @@ def main_train(args) -> None:
 
     opt = torch.optim.Adam(model.parameters(), lr=args.lr)
 
-    out_dir = os.path.join(os.path.dirname(__file__), "checkpoints")
+    out_dir = args.out_dir if hasattr(args, "out_dir") and args.out_dir else os.path.join(os.path.dirname(__file__), "checkpoints")
     os.makedirs(out_dir, exist_ok=True)
+
+    ckpt_tag = args.ckpt_tag if hasattr(args, "ckpt_tag") else ""
 
     print("==== Thermal Guidance Training Config ====")
     print(f"device: {device} (cuda_available={torch.cuda.is_available()})")
@@ -329,21 +331,44 @@ def main_train(args) -> None:
     print("power_grid: 128 -> temp_grid: 64")
     print(f"dataset_total: {n_total} | train: {n_train} | val: {n_val}")
     print(f"batch_size: {args.batch_size} | train_batches: {len(train_loader)} | val_batches: {len(val_loader)}")
+    print(f"seed: {args.seed}")
+    if getattr(args, "amp", False):
+        print(f"amp: True ({args.amp_dtype})")
+    else:
+        print("amp: False")
+    if ckpt_tag:
+        print(f"ckpt_tag: {ckpt_tag}")
+    print(f"out_dir: {out_dir}")
     print("========================================")
 
     for epoch in range(1, args.epochs + 1):
         model.train()
+
+        use_amp = bool(getattr(args, "amp", False) and device.type == "cuda")
+        amp_dtype = torch.float16 if getattr(args, "amp_dtype", "fp16") == "fp16" else torch.bfloat16
+        scaler = torch.cuda.amp.GradScaler(enabled=use_amp and amp_dtype == torch.float16)
+
         for it, batch in enumerate(train_loader):
             power = batch["power"].to(device)
             layout = batch["layout"].to(device)
             temp = batch["temp"].to(device)
 
-            pred = model(power, layout)
-            loss, m = guidance_loss(pred, temp, grad_w=args.grad_w)
+            opt.zero_grad(set_to_none=True)
 
-            opt.zero_grad()
-            loss.backward()
-            opt.step()
+            if use_amp:
+                with torch.autocast(device_type="cuda", dtype=amp_dtype):
+                    pred = model(power, layout)
+                    loss, m = guidance_loss(pred, temp, grad_w=args.grad_w)
+
+                scaler.scale(loss).backward()
+                scaler.step(opt)
+                scaler.update()
+            else:
+                pred = model(power, layout)
+                loss, m = guidance_loss(pred, temp, grad_w=args.grad_w)
+
+                loss.backward()
+                opt.step()
 
             # Print the first-iteration (one batch) output once for quick sanity-check.
             if epoch == 1 and it == 0:
@@ -395,19 +420,34 @@ def main_train(args) -> None:
                 "stats": dataset.stats.to_dict(),
                 "grid_size": 128,
                 "base": args.base,
+                "batch_size": args.batch_size,
+                "lr": float(args.lr),
+                "grad_w": float(args.grad_w),
+                "seed": int(args.seed),
+                "ckpt_tag": ckpt_tag,
             }
-            path = os.path.join(out_dir, f"guidance_net_epoch{epoch}.pth")
+
+            lr_tok = f"{float(args.lr):.0e}"  # e.g., 5e-04
+            gw_tok = f"{float(args.grad_w):g}".replace(".", "p")  # e.g., 0p1
+            prefix = "guidance_net" + (f"_{ckpt_tag}" if ckpt_tag else "")
+
+            name = (
+                f"{prefix}_ep{epoch:04d}_seed{args.seed}_bs{args.batch_size}_lr{lr_tok}_base{args.base}_gw{gw_tok}.pth"
+            )
+            path = os.path.join(out_dir, name)
             torch.save(ckpt, path)
             print(f"[ckpt] saved: {path}")
 
             if args.qat:
-                # Export an int8-converted model checkpoint by default when --qat is enabled.
+                # NOTE: Although this export is named "_int8", FX graph-mode int8 is typically CPU/backend-specific.
+                # Keep as a best-effort artifact; it won't block training if convert fails.
                 try:
                     from torch.ao.quantization.quantize_fx import convert_fx
 
                     model.eval()
                     int8_model = convert_fx(model)
-                    int8_path = os.path.join(out_dir, f"guidance_net_epoch{epoch}_int8.pth")
+                    int8_name = f"{prefix}_ep{epoch:04d}_seed{args.seed}_bs{args.batch_size}_lr{lr_tok}_base{args.base}_gw{gw_tok}_int8.pth"
+                    int8_path = os.path.join(out_dir, int8_name)
                     torch.save(
                         {
                             "epoch": epoch,
@@ -415,7 +455,13 @@ def main_train(args) -> None:
                             "stats": dataset.stats.to_dict(),
                             "grid_size": 128,
                             "base": args.base,
+                            "batch_size": args.batch_size,
+                            "lr": float(args.lr),
+                            "grad_w": float(args.grad_w),
+                            "seed": int(args.seed),
                             "int8": True,
+                            "qat": True,
+                            "ckpt_tag": ckpt_tag,
                         },
                         int8_path,
                     )
@@ -437,7 +483,7 @@ def main_test(args) -> None:
     n_total = len(dataset)
     n_train = int(n_total * 0.9)
     n_test = n_total - n_train
-    gen = torch.Generator().manual_seed(0)
+    gen = torch.Generator().manual_seed(args.seed)
     _, test_set = torch.utils.data.random_split(dataset, [n_train, n_test], generator=gen)
 
     loader = torch.utils.data.DataLoader(test_set, batch_size=args.batch_size, shuffle=False, num_workers=0)
@@ -580,11 +626,17 @@ def build_argparser() -> argparse.ArgumentParser:
     t.add_argument("--ckpt_every", type=int, default=1)
     t.add_argument("--print_every", type=int, default=10)
     t.add_argument("--qat", action="store_true", help="enable quantization-aware training")
+    t.add_argument("--ckpt_tag", type=str, default="", help="tag appended in checkpoint filename")
+    t.add_argument("--out_dir", type=str, default="", help="output directory for checkpoints")
+    t.add_argument("--seed", type=int, default=0)
+    t.add_argument("--amp", action="store_true", help="enable mixed precision training on CUDA")
+    t.add_argument("--amp_dtype", type=str, default="fp16", choices=["fp16", "bf16"], help="mixed precision dtype")
 
     te = sub.add_parser("test")
     te.add_argument("--ckpt", type=str, required=True)
     te.add_argument("--batch_size", type=int, default=8)
     te.add_argument("--out_fig_dir", type=str, default="")
+    te.add_argument("--seed", type=int, default=0)
 
     return p
 
@@ -595,18 +647,3 @@ if __name__ == "__main__":
         main_train(args)
     elif args.cmd == "test":
         main_test(args)
-
-# python guidance_model.py train --epochs 20 --batch_size 16 --ckpt_every 50 --print_every 10
-'''
-test
-python /root/placement/flow_GCN/thermalmodel/guidance_model.py test --ckpt /root/placement/flow_GCN/thermalmodel/checkpoints/guidance_net_epoch20_bs8_lr5e-04_base64_gradw0.1.pth --batch_size 8 --out_fig_dir /root/placement/flow_GCN/thermalmodel/test_result/test_guidance_fig
-
-python guidance_model.py test --ckpt /root/placement/flow_GCN/thermalmodel/checkpoints/guidance_net_epoch100_bs8_lr5e-04_base64_gradw0.1.pth --batch_size 8 --out_fig_dir /root/placement/flow_GCN/thermalmodel/test_result/test_guidance_fig
-
-
-train
- python guidance_model.py train --resume_ckpt /root/placement/flow_GCN/thermalmodel/checkpoints/guidance_net_epoch20_bs8_lr5e-04_base64_gradw0.1.pth --epochs 200 --batch_size 8 --lr 5e-4 --base 64 --grad_w 0.1
-
-retrain
-python guidance_model.py train --epochs 100 --batch_size 8 --lr 5e-4 --base 64 --grad_w 0.1 --ckpt_every 10 --print_every 10  
-'''
