@@ -4,6 +4,7 @@
 # 忽略所有 .png 图片文件
 *.png.DS_Store
 
+
 *.png
 
 *.csv
@@ -11,3 +12,25 @@
 **/hotspot_config/system_*_config
 
 **/thermalmodel/checkpoints/*
+
+# ChipletFM clean Flow Matching runtime artifacts
+ChipletFM/new_fm/runs/
+ChipletFM/new_fm/log/*
+!ChipletFM/new_fm/log/.gitkeep
+ChipletFM/new_fm/**/*.ckpt
+ChipletFM/new_fm/**/*.pt
+ChipletFM/new_fm/**/__pycache__/
+ChipletFM/new_fm/.pytest_cache/
+
+# Python/runtime artifacts
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Experiment outputs and generated datasets
+ChipletFM/logs/
+ChipletFM/diffusion/logs/
+ChipletFM/wandb/
+ChipletFM/datasets/graph/v*/
+ChipletFM/new_fm/dataset/
+Dataset/dataset/output/placement/system_*.json

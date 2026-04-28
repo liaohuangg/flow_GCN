@@ -15,3 +15,25 @@ performer-pytorch
 shapely 
 plotly
 scikit-learn
+
+
+训练：
+CUDA_VISIBLE_DEVICES=0 OMP_NUM_THREADS=8 PYTHONPATH=. python diffusion/train_graph.py --config-name config_graph_fm task=v4 method=v4.1 wandb=False model.fm_t_min=1e-4 train_steps=300000
+
+测试
+CUDA_VISIBLE_DEVICES=0 OMP_NUM_THREADS=8 PYTHONPATH=. python diffusion/eval.py --config-name config_eval_fm task=v4 method=v4-eval seed=98 logger.wandb=False from_checkpoint=D:\WORK\flow_GCN\ChipletFM\logs\diffusion_debug\v4.v4.1.61\best.ckpt eval_samples=20 num_output_samples=10 val_batch_size=16
+
+
+python diffusion/eval.py --config-name config_eval_fm task=v3 method=v3-1-eval seed=98 logger.wandb=False from_checkpoint=D:
+  \WORK\flow_GCN\ChipletFM\logs\diffusion_debug\v3.v3-1.61\best.ckpt eval_samples=10 num_output_samples=4 val_batch_size=16 scatter_plots=[]HYDRA_FULL_ERROR=1
+
+
+  python diffusion/eval.py --config-name config_eval_fm task=v3_margin20 \
+  method=v3-1-eval-hpwl-guidance seed=98 logger.wandb=False \
+  from_checkpoint=D:\WORK\flow_GCN\ChipletFM\logs\diffusion_debug\v4.v4.1.61\best.ckpt
+  eval_samples=20 num_output_samples=20 val_batch_size=16 \
+  guidance@_here_=sgd \
+  model.legality_guidance_weight=0.0 \
+  model.hpwl_guidance_weight=4e-5 \
+  model.grad_descent_steps=5 \
+  model.grad_descent_rate=0.1

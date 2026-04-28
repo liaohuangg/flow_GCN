@@ -1,3 +1,13 @@
+import sys
+from pathlib import Path
+
+_DIFFUSION_DIR = Path(__file__).resolve().parent
+_REPO_ROOT = _DIFFUSION_DIR.parent
+for _path in (_REPO_ROOT, _DIFFUSION_DIR):
+    _path_str = str(_path)
+    if _path_str not in sys.path:
+        sys.path.insert(0, _path_str)
+
 import utils
 import torch
 import hydra
@@ -234,8 +244,8 @@ def main(cfg):
             "reverse_samples": {
                 **metrics,
                 **metrics_special,
-                "image": wandb.Image(image_legalized),
-                "image_raw": wandb.Image(image),
+                "image": utils.logging_image(image_legalized, logger),
+                "image_raw": utils.logging_image(image, logger),
                 "time_elapsed": t5-t3,
             }
         })
@@ -246,16 +256,18 @@ def main(cfg):
             else:
                 output_metrics[k] = [v]
         log_metrics.add(metrics)
-    utils.dict_to_csv(output_metrics, os.path.join(log_dir,"metrics.csv"))
-    for plot_keys in cfg.scatter_plots:
-        x_name = plot_keys[0]
-        y_name = plot_keys[1]
-        if x_name in output_metrics and y_name in output_metrics:
-            scatter_plot = utils.plot_scatter(output_metrics[x_name], output_metrics[y_name], x_title=x_name, y_title=y_name)
-            logger.add({f"{x_name}_vs_{y_name}": scatter_plot})
-    logger.add(log_metrics.result())
-    logger.add(cost(output_metrics), prefix = "sweep")
-    logger.write()
+    if output_metrics:
+        utils.dict_to_csv(output_metrics, os.path.join(log_dir,"metrics.csv"))
+        if cfg.logger.get("wandb", False):
+            for plot_keys in cfg.scatter_plots:
+                x_name = plot_keys[0]
+                y_name = plot_keys[1]
+                if x_name in output_metrics and y_name in output_metrics:
+                    scatter_plot = utils.plot_scatter(output_metrics[x_name], output_metrics[y_name], x_title=x_name, y_title=y_name)
+                    logger.add({f"{x_name}_vs_{y_name}": scatter_plot})
+        logger.add(log_metrics.result())
+        logger.add(cost(output_metrics), prefix = "sweep")
+        logger.write()
 
 if __name__=="__main__":
     main()

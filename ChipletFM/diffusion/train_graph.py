@@ -1,3 +1,13 @@
+import sys
+from pathlib import Path
+
+_DIFFUSION_DIR = Path(__file__).resolve().parent
+_REPO_ROOT = _DIFFUSION_DIR.parent
+for _path in (_REPO_ROOT, _DIFFUSION_DIR):
+    _path_str = str(_path)
+    if _path_str not in sys.path:
+        sys.path.insert(0, _path_str)
+
 import utils
 import torch
 import hydra
@@ -12,6 +22,9 @@ import time
 def main(cfg):
     # Preliminaries
     OmegaConf.set_struct(cfg, True)
+    if cfg.get("wandb") is not None:
+        with open_dict(cfg):
+            cfg.logger.wandb = cfg.wandb
     device = 'cuda' if torch.cuda.is_available() else 'cpu'
     log_dir = os.path.join(cfg.log_dir, f"{cfg.task}.{cfg.method}.{cfg.seed}")
     sample_dir = os.path.join(log_dir, "samples")
@@ -134,10 +147,11 @@ def main(cfg):
             logger.add(train_logs, prefix="train")
 
             # display example images
-            for split in ["train", "val"]:
-                x_disp, cond_disp = dataloader.get_display_batch(cfg.display_examples, split = split)
-                utils.display_graph_samples(cfg.display_examples, x_disp, cond_disp, model, logger, prefix = split)
-                utils.display_forward_graph_samples(x_disp, cond_disp, model, logger, prefix = split)
+            if cfg.display_examples > 0:
+                for split in ["train", "val"]:
+                    x_disp, cond_disp = dataloader.get_display_batch(cfg.display_examples, split = split)
+                    utils.display_graph_samples(cfg.display_examples, x_disp, cond_disp, model, logger, prefix = split)
+                    utils.display_forward_graph_samples(x_disp, cond_disp, model, logger, prefix = split)
             logger.write()
             t_1 = t_2
 

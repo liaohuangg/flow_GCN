@@ -1,0 +1,53 @@
+dataset:
+  path: new_fm/dataset/dataset.pkl
+  seed: 123
+  train_max_samples: 8
+  val_max_samples: 4
+  test_max_samples: 4
+
+model:
+  name: legacy_fm
+  backbone: att_gnn
+  backbone_params:
+    edge_features: 4
+    cond_node_features: 2
+    hidden_size: 64
+    hidden_node_features: [128]
+    attention_node_features: [16]
+    layers_per_block: 1
+    input_encoding_dim: 16
+    dropout: 0.0
+    num_heads: 2
+    mlp_num_layers: 2
+    mlp_size_factor: 2
+    ff_num_layers: 2
+    ff_size_factor: 1
+    att_implementation: flash
+    dir_att_input: true
+    conv_params:
+      layer_type: gat
+      heads: 2
+      concat: true
+  mask_key: is_ports
+  use_mask_as_input: true
+  max_diffusion_steps: 200
+  t_encoding_type: sinusoid
+  t_encoding_dim: 32
+  fm_t_min: 0.0001
+
+train:
+  batch_size: 2
+  legacy_single_graph_batch: true
+  epochs: 1
+  max_steps: 2
+  lr: 0.0003
+  weight_decay: 0.0
+  log_every: 1
+  output_dir: new_fm/log/legacy_raw_smoke
+  device: auto
+  seed: 123
+
+sampling:
+  steps: 10
+  eval_num: 2
+  out_num: 1

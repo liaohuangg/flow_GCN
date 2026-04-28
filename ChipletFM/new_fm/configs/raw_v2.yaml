@@ -1,0 +1,32 @@
+dataset:
+  path: new_fm/dataset/dataset.pkl
+  seed: 123
+  train_max_samples: null
+  val_max_samples: null
+  test_max_samples: 128
+
+model:
+  hidden_dim: 256
+  time_dim: 64
+  message_steps: 6
+  backbone: residual
+  dropout: 0.05
+  prior: uniform
+  use_global_feat: true
+
+train:
+  batch_size: 32
+  epochs: 60
+  max_steps: 12000
+  lr: 0.0008
+  weight_decay: 0.00001
+  log_every: 50
+  output_dir: new_fm/log/raw_v2
+  device: auto
+  seed: 123
+
+sampling:
+  steps: 60
+  eval_num: 128
+  out_num: 16
+

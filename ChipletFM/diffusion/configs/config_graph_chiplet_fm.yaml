@@ -24,7 +24,7 @@ logger:
   wandb_project: ""
 
 implementation: custom
-model:
+model: 
   mask_key: is_ports
   use_mask_as_input: True
   max_diffusion_steps: 200

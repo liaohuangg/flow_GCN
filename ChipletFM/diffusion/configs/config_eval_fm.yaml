@@ -3,7 +3,7 @@ defaults:
   - model: att-gnn #graph-transformer
   - model/conv-layer@model.backbone_params: gat
   - model/size@model.backbone_params: large
-  - guidance@_here_: none
+  - guidance@_here_: sgd
   - legalizer@_here_: standard
   - sc_placer@_here_: sgd
   - override hydra/hydra_logging: none

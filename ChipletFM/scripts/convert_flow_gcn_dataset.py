@@ -73,7 +73,7 @@ def _paired_files(input_dir: Path, placement_dir: Path) -> List[Tuple[int, Path,
     return [(sys_id, input_files[sys_id], placement_files[sys_id]) for sys_id in common_ids]
 
 
-def _chip_bbox(placement_chiplets: List[dict]) -> torch.Tensor:
+def _chip_bbox(placement_chiplets: List[dict], margin_ratio: float = 0.1) -> torch.Tensor:
     xs_min = [float(ch["x-position"]) for ch in placement_chiplets]
     ys_min = [float(ch["y-position"]) for ch in placement_chiplets]
     xs_max = [float(ch["x-position"]) + float(ch["width"]) for ch in placement_chiplets]
@@ -88,10 +88,24 @@ def _chip_bbox(placement_chiplets: List[dict]) -> torch.Tensor:
         xmax = xmin + 1.0
     if math.isclose(ymin, ymax):
         ymax = ymin + 1.0
+
+    width = xmax - xmin
+    height = ymax - ymin
+    x_margin = width * margin_ratio
+    y_margin = height * margin_ratio
+    xmin -= x_margin
+    ymin -= y_margin
+    xmax += x_margin
+    ymax += y_margin
     return torch.tensor([xmin, ymin, xmax, ymax], dtype=torch.float32)
 
 
-def _build_sample(input_data: dict, placement_data: dict, system_id: int) -> Tuple[Data, torch.Tensor]:
+def _build_sample(
+    input_data: dict,
+    placement_data: dict,
+    system_id: int,
+    margin_ratio: float,
+) -> Tuple[Data, torch.Tensor]:
     chiplets = input_data["chiplets"]
     placement_chiplets = placement_data["chiplets"]
 
@@ -174,7 +188,7 @@ def _build_sample(input_data: dict, placement_data: dict, system_id: int) -> Tup
         edge_attr=edge_attr_tensor,
         is_ports=torch.zeros(len(chiplets), dtype=torch.bool),
         is_macros=torch.ones(len(chiplets), dtype=torch.bool),
-        chip_size=_chip_bbox(placement_chiplets),
+        chip_size=_chip_bbox(placement_chiplets, margin_ratio=margin_ratio),
         node_power=node_power,
         edge_weight=edge_weight_tensor,
         edge_type=edge_type_tensor,
@@ -200,6 +214,7 @@ def convert_dataset(
     placement_dir: Path,
     output_dir: Path,
     val_ratio: float,
+    margin_ratio: float,
 ) -> None:
     pairs = _paired_files(input_dir, placement_dir)
     if not pairs:
@@ -215,7 +230,7 @@ def convert_dataset(
     for new_idx, (system_id, input_path, placement_path) in enumerate(pairs):
         input_data = _load_json(input_path)
         placement_data = _load_json(placement_path)
-        cond, placement = _build_sample(input_data, placement_data, system_id)
+        cond, placement = _build_sample(input_data, placement_data, system_id, margin_ratio)
 
         with (output_dir / f"graph{new_idx}.pickle").open("wb") as f:
             pickle.dump(cond, f)
@@ -253,6 +268,12 @@ def main() -> None:
     parser.add_argument("--placement-dir", type=Path, default=default_placement_dir)
     parser.add_argument("--output-dir", type=Path, default=default_output_dir)
     parser.add_argument("--val-ratio", type=float, default=0.1)
+    parser.add_argument(
+        "--margin-ratio",
+        type=float,
+        default=0.1,
+        help="Expand the inferred chip bounding box by this fraction on each side.",
+    )
     args = parser.parse_args()
 
     if not (0.0 < args.val_ratio <= 1.0):
@@ -263,6 +284,7 @@ def main() -> None:
         placement_dir=args.placement_dir,
         output_dir=args.output_dir,
         val_ratio=args.val_ratio,
+        margin_ratio=args.margin_ratio,
     )
 
 

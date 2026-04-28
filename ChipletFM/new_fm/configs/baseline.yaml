@@ -1,0 +1,27 @@
+dataset:
+  path: datasets/graph/v3/dataset.pkl
+  seed: 123
+  train_max_samples: null
+  val_max_samples: null
+  test_max_samples: 128
+
+model:
+  hidden_dim: 128
+  time_dim: 64
+  message_steps: 3
+
+train:
+  batch_size: 32
+  epochs: 50
+  max_steps: 10000
+  lr: 0.001
+  weight_decay: 0.00001
+  log_every: 50
+  output_dir: new_fm/log/baseline_v3
+  device: auto
+  seed: 123
+
+sampling:
+  steps: 50
+  eval_num: 128
+  out_num: 16

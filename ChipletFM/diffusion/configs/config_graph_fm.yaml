@@ -9,7 +9,7 @@ defaults:
   - override hydra/job_logging: stdout
 
 family: flow_matching
-task: v1.61
+task: v3
 num_classes: 10
 method: debug_flow_matching
 seed: 61
@@ -22,6 +22,7 @@ logger:
   wandb: True
   wandb_entity: <your name here>
   wandb_project: <your project here>
+wandb: null
 
 # model params
 implementation: custom
@@ -43,8 +44,8 @@ cluster:
 batch_size: 64
 val_batch_size: 64
 train_steps: 3000000
-print_every: 5000
-eval_every: 100000
+print_every: 500
+eval_every: 200000
 eval_samples: 32
 eval_policy: open_loop
 display_examples: 1

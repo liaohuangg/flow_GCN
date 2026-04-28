@@ -46,7 +46,7 @@ def _paired_files(input_dir: Path, placement_dir: Path) -> list[tuple[int, Path,
     return [(sys_id, input_files[sys_id], placement_files[sys_id]) for sys_id in common_ids]
 
 
-def _chip_bbox(placement_chiplets: list[dict]) -> torch.Tensor:
+def _chip_bbox(placement_chiplets: list[dict], margin_ratio: float = 0.1) -> torch.Tensor:
     xs_min = [float(ch["x-position"]) for ch in placement_chiplets]
     ys_min = [float(ch["y-position"]) for ch in placement_chiplets]
     xs_max = [float(ch["x-position"]) + float(ch["width"]) for ch in placement_chiplets]
@@ -60,10 +60,45 @@ def _chip_bbox(placement_chiplets: list[dict]) -> torch.Tensor:
         xmax = xmin + 1.0
     if math.isclose(ymin, ymax):
         ymax = ymin + 1.0
+
+    width = xmax - xmin
+    height = ymax - ymin
+    x_margin = width * margin_ratio
+    y_margin = height * margin_ratio
+    xmin -= x_margin
+    ymin -= y_margin
+    xmax += x_margin
+    ymax += y_margin
     return torch.tensor([xmin, ymin, xmax, ymax], dtype=torch.float32)
 
 
-def _build_example(input_data: dict, placement_data: dict, system_id: int) -> dict:
+def _edge_features(
+    wire_count: float,
+    emib_type_value: float,
+    emib_length: float,
+    emib_bump_width: float,
+) -> list[float]:
+    # The first four edge_attr dimensions are reserved for source/dest pin offsets.
+    # Chiplet inputs do not provide pin locations, so append normalized connection
+    # features after the pin-offset block for the GNN edge encoder.
+    return [
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        wire_count / 1024.0,
+        emib_length / 25.6,
+        emib_type_value,
+        emib_bump_width / 0.5,
+    ]
+
+
+def _build_example(
+    input_data: dict,
+    placement_data: dict,
+    system_id: int,
+    margin_ratio: float,
+) -> dict:
     chiplets = input_data["chiplets"]
     placement_chiplets = placement_data["chiplets"]
 
@@ -94,13 +129,8 @@ def _build_example(input_data: dict, placement_data: dict, system_id: int) -> di
     )
 
     name_to_idx = {name: idx for idx, name in enumerate(input_names)}
-    edge_pairs = []
-    edge_attr = []
-    edge_weight = []
-    edge_type = []
-    edge_emib_length = []
-    edge_emib_max_width = []
-    edge_emib_bump_width = []
+    forward_edges = []
+    reverse_edges = []
 
     for conn in input_data.get("connections", []):
         src = name_to_idx[str(conn["node1"])]
@@ -112,14 +142,30 @@ def _build_example(input_data: dict, placement_data: dict, system_id: int) -> di
         emib_max_width = float(conn.get("EMIB_max_width", 0.0))
         emib_bump_width = float(conn.get("EMIB_bump_width", 0.0))
 
-        for u, v in ((src, dst), (dst, src)):
-            edge_pairs.append([u, v])
-            edge_attr.append([0.0, 0.0, 0.0, 0.0])
-            edge_weight.append(wire_count)
-            edge_type.append(emib_type_value)
-            edge_emib_length.append(emib_length)
-            edge_emib_max_width.append(emib_max_width)
-            edge_emib_bump_width.append(emib_bump_width)
+        attr = {
+            "edge_attr": _edge_features(
+                wire_count,
+                emib_type_value,
+                emib_length,
+                emib_bump_width,
+            ),
+            "edge_weight": wire_count,
+            "edge_type": emib_type_value,
+            "edge_emib_length": emib_length,
+            "edge_emib_max_width": emib_max_width,
+            "edge_emib_bump_width": emib_bump_width,
+        }
+        forward_edges.append({"edge_pair": [src, dst], **attr})
+        reverse_edges.append({"edge_pair": [dst, src], **attr})
+
+    edges = forward_edges + reverse_edges
+    edge_pairs = [edge["edge_pair"] for edge in edges]
+    edge_attr = [edge["edge_attr"] for edge in edges]
+    edge_weight = [edge["edge_weight"] for edge in edges]
+    edge_type = [edge["edge_type"] for edge in edges]
+    edge_emib_length = [edge["edge_emib_length"] for edge in edges]
+    edge_emib_max_width = [edge["edge_emib_max_width"] for edge in edges]
+    edge_emib_bump_width = [edge["edge_emib_bump_width"] for edge in edges]
 
     if edge_pairs:
         edge_index = torch.tensor(edge_pairs, dtype=torch.long).t().contiguous()
@@ -144,7 +190,7 @@ def _build_example(input_data: dict, placement_data: dict, system_id: int) -> di
         edge_attr=edge_attr_tensor,
         is_ports=torch.zeros(len(chiplets), dtype=torch.bool),
         is_macros=torch.ones(len(chiplets), dtype=torch.bool),
-        chip_size=_chip_bbox(placement_chiplets),
+        chip_size=_chip_bbox(placement_chiplets, margin_ratio=margin_ratio),
         node_power=node_power,
         edge_weight=edge_weight_tensor,
         edge_type=edge_type_tensor,
@@ -169,7 +215,13 @@ def _write_config(output_dir: Path, train_samples: int, val_samples: int) -> Non
     (output_dir / "config.yaml").write_text(config_text, encoding="utf-8")
 
 
-def convert_dataset(input_dir: Path, placement_dir: Path, output_dir: Path, val_ratio: float) -> None:
+def convert_dataset(
+    input_dir: Path,
+    placement_dir: Path,
+    output_dir: Path,
+    val_ratio: float,
+    margin_ratio: float,
+) -> None:
     pairs = _paired_files(input_dir, placement_dir)
     if not pairs:
         raise RuntimeError("No paired input/placement samples found.")
@@ -179,7 +231,10 @@ def convert_dataset(input_dir: Path, placement_dir: Path, output_dir: Path, val_
     val_samples = min(val_samples, len(pairs))
     train_samples = len(pairs) - val_samples
 
-    examples = [_build_example(_load_json(inp), _load_json(plc), system_id) for system_id, inp, plc in pairs]
+    examples = [
+        _build_example(_load_json(inp), _load_json(plc), system_id, margin_ratio)
+        for system_id, inp, plc in pairs
+    ]
     dataset = {
         "train": examples[:train_samples],
         "val": examples[train_samples:],
@@ -237,12 +292,24 @@ def main() -> None:
         default=repo_root / "datasets" / "graph" / "v2",
     )
     parser.add_argument("--val-ratio", type=float, default=0.1)
+    parser.add_argument(
+        "--margin-ratio",
+        type=float,
+        default=0.1,
+        help="Expand the inferred chip bounding box by this fraction on each side.",
+    )
     args = parser.parse_args()
 
     if not (0.0 < args.val_ratio <= 1.0):
         raise SystemExit("--val-ratio must be in (0, 1].")
 
-    convert_dataset(args.input_dir, args.placement_dir, args.output_dir, args.val_ratio)
+    convert_dataset(
+        args.input_dir,
+        args.placement_dir,
+        args.output_dir,
+        args.val_ratio,
+        args.margin_ratio,
+    )
 
 
 if __name__ == "__main__":

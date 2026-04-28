@@ -27,6 +27,12 @@ import moviepy.editor
 import plotly.graph_objects as go
 import matplotlib.pyplot as plt
 
+def _uses_wandb(logger):
+    return any(output.__class__.__name__ == "WandBOutput" for output in getattr(logger, "outputs", []))
+
+def logging_image(image, logger):
+    return wandb.Image(image) if _uses_wandb(logger) else image
+
 @torch.no_grad()
 def validate(x_val, model, cond=None):
     model.eval()
@@ -55,7 +61,7 @@ def display_predictions(x_val, y_val, model, logger, prefix = "val", text_labels
         probs.cpu().numpy(),
         log_probs.cpu().numpy(),
         ):
-        log_image = wandb.Image(image)
+        log_image = logging_image(image, logger)
         logs = {
             "examples": {
                 "image": log_image,
@@ -79,8 +85,8 @@ def display_samples(batch_size, model, logger, intermediate_every = 200, prefix 
         torch.movedim(samples, 1, -1).cpu().numpy(),
         torch.movedim(intermediates, 1, -1).cpu().numpy()
     )):
-        log_image = wandb.Image(image)
-        log_intermediate = wandb.Image(intermediate_image)
+        log_image = logging_image(image, logger)
+        log_intermediate = logging_image(intermediate_image, logger)
         logs = {
             "reverse_examples": {
                 "sample": log_image,
@@ -102,8 +108,8 @@ def display_forward_samples(x_val, model, logger, intermediate_every = 200, pref
         torch.movedim(x_val, 1, -1).cpu().numpy(),
         torch.movedim(intermediates, 1, -1).cpu().numpy(),
     )):
-        log_image = wandb.Image(image)
-        log_intermediate = wandb.Image(intermediate_image)
+        log_image = logging_image(image, logger)
+        log_intermediate = logging_image(intermediate_image, logger)
         logs = {
             "forward_examples": {
                 "image": log_image,
@@ -148,8 +154,8 @@ def display_graph_samples(batch_size, x_val, cond_val, model, logger, intermedia
         torch.movedim(sample_images, 1, -1).cpu().numpy(),
         torch.movedim(intermediate_images, 1, -1).cpu().numpy()
     )):
-        log_image = wandb.Image(image)
-        log_intermediate = wandb.Image(intermediate_image)
+        log_image = logging_image(image, logger)
+        log_intermediate = logging_image(intermediate_image, logger)
         logs = {
             "reverse_examples": {
                 "sample": log_image,
@@ -174,8 +180,8 @@ def display_forward_graph_samples(x_val, cond_val, model, logger, intermediate_e
         torch.movedim(x_images, 1, -1).cpu().numpy(),
         torch.movedim(intermediate_images, 1, -1).cpu().numpy(),
     )):
-        log_image = wandb.Image(image)
-        log_intermediate = wandb.Image(intermediate_image)
+        log_image = logging_image(image, logger)
+        log_intermediate = logging_image(intermediate_image, logger)
         logs = {
             "forward_examples": {
                 "image": log_image,
@@ -1092,6 +1098,9 @@ def hpwl(samples, cond_val):
         cond_val = orientations.to_fixed(samples[:,2:], cond_val)
     samples = samples[:,:2].cpu()
 
+    if "edge_weight" in cond_val:
+        return guidance.weighted_pairwise_hpwl(samples, cond_val).item()
+
     nets = {}
 
     unique_edges = len(cond_val.edge_attr)//2
@@ -1116,6 +1125,21 @@ def hpwl_fast(x, cond, normalized_hpwl = True):
     Returns hpwl computed using custom GNN trick
     If not normalized_hpwl, will return both normalized HPWL, as well as rescaled HPWL (using original units)
     """
+    if "edge_weight" in cond:
+        if normalized_hpwl:
+            return guidance.weighted_pairwise_hpwl(x, cond).item()
+        hpwl_xy = guidance.weighted_pairwise_hpwl(x, cond, raw_output=True)
+        if "chip_size" in cond:
+            x_scale = (cond.chip_size[2] - cond.chip_size[0])/2 # because chip is from [-1, 1] when normed
+            y_scale = (cond.chip_size[3] - cond.chip_size[1])/2
+        else:
+            x_scale = 1
+            y_scale = 1
+        scale_factor = torch.tensor([x_scale, y_scale], dtype=hpwl_xy.dtype, device=hpwl_xy.device)
+        rescaled_hpwl = (hpwl_xy * scale_factor).sum()
+        norm_hpwl = hpwl_xy.sum()
+        return norm_hpwl.item(), rescaled_hpwl.item()
+
     hpwl_net = guidance.HPWL()
     pin_map, pin_offsets, pin_edge_index = guidance.compute_pin_map(cond)
     hpwl_net = hpwl_net(x, pin_map, pin_offsets, pin_edge_index, net_aggr="sum", raw_output = (not normalized_hpwl))

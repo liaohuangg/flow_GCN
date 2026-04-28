@@ -159,6 +159,9 @@ def hpwl_guidance_potential(x, cond, pin_map=None, pin_offsets=None, pin_edge_in
     - cond is pytorch data object with edge_index (2, E) and edge_attr (E, 4)
     - pin map, offsets, edge index, and hpwl_net are optional variables that should be cached per-netlist
     """
+    if "edge_weight" in cond:
+        return weighted_pairwise_hpwl(x, cond, net_aggr="sum")
+
     # compute netlist-level info if cached version not provided
     if pin_map is None or pin_offsets is None or pin_edge_index is None:
         pin_map, pin_offsets, pin_edge_index = compute_pin_map(cond)
@@ -177,6 +180,10 @@ def hpwl_square_guidance_potential(x, cond, pin_map=None, pin_offsets=None, pin_
     - cond is pytorch data object with edge_index (2, E) and edge_attr (E, 4)
     - pin map, offsets, edge index, and hpwl_net are optional variables that should be cached per-netlist
     """
+    if "edge_weight" in cond:
+        hpwl = weighted_pairwise_hpwl(x, cond, net_aggr="none")
+        return ((hpwl ** 2) / 2).sum(dim=-1)
+
     # compute netlist-level info if cached version not provided
     if pin_map is None or pin_offsets is None or pin_edge_index is None:
         pin_map, pin_offsets, pin_edge_index = compute_pin_map(cond)
@@ -187,6 +194,48 @@ def hpwl_square_guidance_potential(x, cond, pin_map=None, pin_offsets=None, pin_
     hpwl = hpwl_net(x, pin_map, pin_offsets, pin_edge_index, net_aggr = "none") # (B, P)
     hpwl_potential = ((hpwl ** 2)/2).sum(dim=-1)
     return hpwl_potential
+
+def weighted_pairwise_hpwl(x, cond, net_aggr="sum", raw_output=False):
+    """
+    Pairwise weighted HPWL for chiplet connections.
+    Uses the first half of bidirectional edges as unique undirected edges.
+    """
+    if x.dim() == 2:
+        x = x.unsqueeze(0)
+        squeeze = True
+    else:
+        squeeze = False
+
+    _, E = cond.edge_index.shape
+    assert E % 2 == 0, "cond edge index assumed to contain forward and reverse edges"
+    unique_edges = E // 2
+    if unique_edges == 0:
+        empty = x.new_zeros((x.shape[0], 0, 2 if raw_output else 1))
+        if raw_output or net_aggr == "none":
+            return empty.squeeze(0) if squeeze else empty
+        return x.new_zeros((x.shape[0],)).squeeze(0) if squeeze else x.new_zeros((x.shape[0],))
+
+    edge_index = cond.edge_index[:, :unique_edges].to(device=x.device)
+    edge_attr = cond.edge_attr[:unique_edges]
+    weights = cond.edge_weight[:unique_edges].to(device=x.device, dtype=x.dtype).view(1, unique_edges)
+    src = edge_index[0]
+    dst = edge_index[1]
+    src_pos = x[:, src, :2] + edge_attr[:, :2].to(device=x.device, dtype=x.dtype).unsqueeze(0)
+    dst_pos = x[:, dst, :2] + edge_attr[:, 2:4].to(device=x.device, dtype=x.dtype).unsqueeze(0)
+    weighted_delta = torch.abs(src_pos - dst_pos) * weights.unsqueeze(-1)
+    if raw_output:
+        return weighted_delta.squeeze(0) if squeeze else weighted_delta
+
+    edge_hpwl = weighted_delta.sum(dim=-1)
+    if net_aggr == "sum":
+        hpwl = edge_hpwl.sum(dim=-1)
+    elif net_aggr == "mean":
+        hpwl = edge_hpwl.mean(dim=-1)
+    elif net_aggr == "none":
+        hpwl = edge_hpwl
+    else:
+        raise NotImplementedError
+    return hpwl.squeeze(0) if squeeze else hpwl
 
 class HPWL(tgn.MessagePassing):
     def __init__(self):
