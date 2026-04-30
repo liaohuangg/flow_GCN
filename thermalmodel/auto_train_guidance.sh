@@ -126,7 +126,7 @@ mkdir -p "$FP32_OUT" "$QAT_OUT" "$PTQ_OUT"
 echo "[cfg] dir=$DIR"
 echo "[cfg] epochs=$EPOCHS ckpt_every=$CKPT_EVERY print_every=$PRINT_EVERY"
 echo "[cfg] bs=$BS lr=$LR base=$BASE grad_w=$GRAD_W seed=$SEED"
-echo "[cfg] conda_env=$CONDA_ENV (uses: conda run -n ... python -u)"
+echo "[cfg] conda_env=$CONDA_ENV (uses: conda run --no-capture-output -n ... python -u)"
 echo "[cfg] calib_batches=$CALIB_BATCHES calib_bs=$CALIB_BS (no-op for PTQ-fp16 export)"
 if [[ "$AMP" -eq 1 ]]; then
   echo "[cfg] amp=1 amp_dtype=$AMP_DTYPE"
@@ -145,7 +145,7 @@ if [[ "$AMP" -eq 1 ]]; then
   AMP_ARGS+=(--amp --amp_dtype "$AMP_DTYPE")
 fi
 
-RUNPY=(conda run -n "$CONDA_ENV" python -u)
+RUNPY=(conda run --no-capture-output -n "$CONDA_ENV" python -u)
 
 if [[ "$RUN_FP32" -eq 1 ]]; then
   echo "[run] fp32 training..."
@@ -207,3 +207,8 @@ else
 fi
 
 echo "[done]"
+
+'''
+训练时量化（QAT）：int8 QAT（quint8/qint8 observers），可选叠加 AMP(fp16/bf16)加速训练。
+训练后量化（PTQ）：fp16 权重导出（model.half()），用于 GPU 推理加速。 
+'''
