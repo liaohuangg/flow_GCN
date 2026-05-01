@@ -114,12 +114,31 @@ def plot_thermal_grid_overlay(
 
     chiplets = _load_chiplet_rects_mm(flp_path)
 
-    total_w = total_h = 0.0
-    for _n, w, h, x, y in chiplets:
-        total_w = max(total_w, x + w)
-        total_h = max(total_h, y + h)
+    # Compute layout bounding box (mm). We draw in a square canvas whose side is the
+    # longest edge of the layout bounding box, and pad equally on both sides so the
+    # chiplet layout is centered (left/right and up/down).
+    min_x = min_y = 0.0
+    max_x = max_y = 0.0
+    if chiplets:
+        min_x = min(x for _n, _w, _h, x, _y in chiplets)
+        min_y = min(y for _n, _w, _h, _x, y in chiplets)
+        max_x = max(x + w for _n, w, _h, x, _y in chiplets)
+        max_y = max(y + h for _n, _w, h, _x, y in chiplets)
+
+    total_w = max_x - min_x
+    total_h = max_y - min_y
     if total_w <= 0 or total_h <= 0:
         total_w = total_h = float(max(grid.shape[-1], grid.shape[-2]))
+        min_x = min_y = 0.0
+        max_x = total_w
+        max_y = total_h
+
+    side = max(total_w, total_h)
+    pad_x = (side - total_w) / 2.0
+    pad_y = (side - total_h) / 2.0
+
+    x0, x1 = (min_x - pad_x), (max_x + pad_x)
+    y0, y1 = (min_y - pad_y), (max_y + pad_y)
 
     if cmap_name == "hotspot":
         cmap = _hotspot_cmap()
@@ -130,9 +149,9 @@ def plot_thermal_grid_overlay(
     im = ax.imshow(
         np.flipud(grid),
         cmap=cmap,
-        extent=(0, total_w, 0, total_h),
+        extent=(x0, x1, y0, y1),
         origin="lower",
-        aspect="auto",
+        aspect="equal",
         vmin=vmin,
         vmax=vmax,
     )
@@ -148,6 +167,8 @@ def plot_thermal_grid_overlay(
         ax.set_title(title, fontsize=18)
     ax.set_xlabel("X (mm)", fontsize=18)
     ax.set_ylabel("Y (mm)", fontsize=18)
+    ax.set_xlim(x0, x1)
+    ax.set_ylim(y0, y1)
     ax.tick_params(axis="both", labelsize=14)
 
     # annotate max/avg

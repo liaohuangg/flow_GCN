@@ -1,0 +1,29 @@
+# fp32 vs ptq-fp16 test results
+date=2026-05-01 14:00:28
+env=conda:chipdiffusion
+project_root=/root/placement/flow_GCN
+
+[test_params]
+seed=0
+eval_bs=8
+device=cuda
+split=train=0.9 test=0.1 (torch.utils.data.random_split generator seed)
+
+[units]
+All error metrics are in Kelvin (K). Note: temperature differences in K equal differences in °C.
+
+[metric_defs]
+RMSE: sqrt(mean((pred - gt)^2)) over all pixels per sample
+Max AE: max(abs(pred - gt)) over all pixels across the whole test set
+RMSPE (%): 100 * sqrt(mean(((pred - gt)/gt)^2)) over pixels per sample, then averaged over batches
+mean_grad: mean(|Sobel(pred) - Sobel(gt)|) (same as eval_guidance_ckpt.py)
+
+[train_params]
+fp32: {'epoch': 195, 'base': 96, 'batch_size': 8, 'lr': 0.0002, 'grad_w': 0.1, 'seed': 0, 'ckpt_tag': 'b96_lr2e-4_totalp_avg_resume'}
+ptq-fp16: {'epoch': 195, 'base': 96}
+
+[fp32]
+metrics units=K mean_rmse=0.186452 min_rmse=0.037954 max_rmse=1.292371 mean_grad=0.283428 max_ae=4.523407 mean_rmspe_pct=0.055383 worst_i=320 worst_j=5 worst_rmse=1.2923712730407715 best_i=693 best_j=6 best_rmse=0.03795367479324341 ckpt=/root/placement/flow_GCN/thermalmodel/checkpoints/guidance_b96_lr2e-4_ep200_20260430_resume/guidance_net_b96_lr2e-4_totalp_avg_resume_ep0195_seed0_bs8_lr2e-04_base96_gw0p1.pth
+
+[ptq-fp16]
+metrics units=K mean_rmse=0.186556 min_rmse=0.038574 max_rmse=1.293809 mean_grad=0.283666 max_ae=4.521362 mean_rmspe_pct=0.055414 worst_i=320 worst_j=5 worst_rmse=1.293808937072754 best_i=693 best_j=6 best_rmse=0.03857424110174179 ckpt=/root/placement/flow_GCN/thermalmodel/checkpoints/guidance_b96_lr2e-4_ep195_PTQ/guidance_net_b96_lr2e-4_totalp_avg_resume_ep0195_seed0_bs8_lr2e-04_base96_gw0p1_fp16.pth

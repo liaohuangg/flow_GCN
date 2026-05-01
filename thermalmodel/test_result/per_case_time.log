@@ -1,0 +1,74 @@
+# per-case timing (model + hotspot)
+
+[case_selection]
+description=first 1000 cases from thermal_map/powercsv sorted by (i,j)
+source=/root/placement/flow_GCN/Dataset/dataset/output/thermal/thermal_map/powercsv
+pattern=system_power_{i}_{j}.csv
+n_cases=1000
+
+[units]
+time_total=seconds (s)
+time_per_case=milliseconds (ms)
+
+[model_timing]
+date=2026-05-01 14:01:39
+env=conda:chipdiffusion
+
+[fp32]
+ckpt=/root/placement/flow_GCN/thermalmodel/checkpoints/guidance_b96_lr2e-4_ep200_20260430_resume/guidance_net_b96_lr2e-4_totalp_avg_resume_ep0195_seed0_bs8_lr2e-04_base96_gw0p1.pth
+device=cuda
+n_cases=1000 eval_bs=8 num_workers=0 pin_memory=False
+dataset_build_s=30.737386
+total_wall_s=4.871843
+forward_only_s=1.289323
+dataloader_like_s=0.058915
+per_case_total_ms=4.871843
+per_case_forward_ms=1.289323
+per_case_dataloader_like_ms=0.058915
+per_case_total_minus_dataloader_ms=4.812928
+total_minus_forward_s=3.582520
+total_minus_forward_minus_dl_s=3.523605
+
+[ptq-fp16]
+ckpt=/root/placement/flow_GCN/thermalmodel/checkpoints/guidance_b96_lr2e-4_ep195_PTQ/guidance_net_b96_lr2e-4_totalp_avg_resume_ep0195_seed0_bs8_lr2e-04_base96_gw0p1_fp16.pth
+device=cuda
+n_cases=1000 eval_bs=8 num_workers=0 pin_memory=False
+model_param_dtype=torch.float16
+dataset_build_s=31.921412
+total_wall_s=4.701777
+forward_only_s=1.357463
+dataloader_like_s=0.087570
+per_case_total_ms=4.701777
+per_case_forward_ms=1.357463
+per_case_dataloader_like_ms=0.087570
+per_case_total_minus_dataloader_ms=4.614207
+total_minus_forward_s=3.344314
+total_minus_forward_minus_dl_s=3.256743
+
+
+[hotspot_timing]
+# HotSpot runtime measured by wall-clock around a single HotSpot invocation per case.
+date=2026-05-01
+env=linux
+thermal_map_root=/root/placement/flow_GCN/Dataset/dataset/output/thermal/thermal_map
+hotspot_config_root=/root/placement/flow_GCN/Dataset/dataset/output/thermal/hotspot_config
+hotspot_bin=/root/placement/flow_GCN/Dataset/dataset/hotspot/HotSpot/hotspot
+model_type=grid
+detailed_3d=on
+n_cases=1000
+total_s=1382.152386
+avg_per_case_s=1.382152
+avg_per_case_ms=1382.152386
+p50_per_case_s=1.376058
+
+[comparison_speedup_vs_hotspot]
+# speedup = (hotspot avg per-case time) / (model per-case time)
+# Note: model per-case metrics are in ms; hotspot avg is converted to ms for speedup.
+hotspot_avg_per_case_ms=1382.152386
+
+[fp32]
+model_per_case_total_ms=4.871843
+model_per_case_total_minus_dataloader_ms=4.812928
+speedup_total_x=283.712
+speedup_total_minus_dataloader_x=287.183
+
