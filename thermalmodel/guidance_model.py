@@ -107,14 +107,21 @@ class FiLM(nn.Module):
 class ThermalGuidanceNet(nn.Module):
     """ThermalGuidanceNet: 64x64 grid predictor for diffusion guidance.
 
-    Required input channels (CoordConv): [power_grid, layout_mask, x_coord_map, y_coord_map].
+    Inputs:
+      - power_grid: (B,1,128,128)
+      - layout_mask: (B,1,128,128)
+      - total_power: (B,1) scalar (already scaled/normalized by dataset)
+
+    Outputs:
+      - temp_grid: (B,1,64,64)
+      - avg_temp:  (B,1) (normalized to [0,1])
 
     Note:
       The current dataset loader derives a hard 0/1 mask from .flp (not differentiable). For diffusion,
       keep the model differentiable and supply a differentiable layout representation at inference time.
     """
 
-    def __init__(self, base: int = 32):
+    def __init__(self, base: int = 32, cond_dim: int = 1):
         super().__init__()
 
         self.quant = torch.ao.quantization.QuantStub()
@@ -152,6 +159,9 @@ class ThermalGuidanceNet(nn.Module):
             LiteInvertedResidual(base * 8, base * 8, stride=1, expand_ratio=2),
         )
 
+        # condition injection (total power)
+        self.film = FiLM(cond_dim=cond_dim, feat_ch=base * 8)
+
         # decoder: upsample + concat skip + conv
         self.up3 = ConvGNAct(base * 8, base * 4, k=1, s=1, p=0)
         self.fuse3 = ConvGNAct(base * 8, base * 4, k=3, s=1)
@@ -161,6 +171,14 @@ class ThermalGuidanceNet(nn.Module):
 
         # Head directly at 64x64 (no 128->64 avg_pool downsample)
         self.head = nn.Conv2d(base * 2, 1, kernel_size=1)
+
+        # avg temp head from bottleneck
+        self.avg_pool = nn.AdaptiveAvgPool2d((1, 1))
+        self.avg_head = nn.Sequential(
+            nn.Linear(base * 8, base * 2),
+            nn.SiLU(inplace=True),
+            nn.Linear(base * 2, 1),
+        )
 
         # cache coord maps
         self._coord_hw: Optional[Tuple[int, int]] = None
@@ -178,7 +196,7 @@ class ThermalGuidanceNet(nn.Module):
         x, y = self._coord_xy
         return x.expand(b, -1, -1, -1), y.expand(b, -1, -1, -1)
 
-    def forward(self, power_grid: torch.Tensor, layout_mask: torch.Tensor) -> torch.Tensor:
+    def forward(self, power_grid: torch.Tensor, layout_mask: torch.Tensor, total_power: Optional[torch.Tensor] = None):
         b, _, h, w = power_grid.shape
         xmap, ymap = self._coords(b, h, w, device=power_grid.device, dtype=power_grid.dtype)
 
@@ -195,6 +213,17 @@ class ThermalGuidanceNet(nn.Module):
 
         z = self.bottleneck(x3)
 
+        if total_power is None:
+            total_power = torch.zeros((b, 1), device=z.device, dtype=z.dtype)
+        else:
+            total_power = total_power.view(b, 1).to(device=z.device, dtype=z.dtype)
+
+        z = self.film(z, total_power)
+
+        # avg temp head
+        pooled = self.avg_pool(z).flatten(1)
+        avg = self.avg_head(pooled)
+
         u3 = F.interpolate(z, scale_factor=2, mode="bilinear", align_corners=False)
         u3 = self.up3(u3)
         u3 = torch.cat([u3, s3], dim=1)
@@ -207,7 +236,14 @@ class ThermalGuidanceNet(nn.Module):
 
         out = self.head(u2)
         out = self.dequant(out)
-        return out
+        avg = self.dequant(avg)
+
+        # Global temperature baseline calibration:
+        # shift the whole field so that mean(pred_grid) matches pred_avg.
+        out_mean = out.mean(dim=(2, 3), keepdim=True)
+        out = out + (avg.view(b, 1, 1, 1) - out_mean)
+
+        return out, avg
 
 
 def _sobel_filters(device: torch.device, dtype: torch.dtype) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -229,26 +265,53 @@ def spatial_gradient_loss(pred: torch.Tensor, target: torch.Tensor) -> torch.Ten
     return F.mse_loss(gx_p, gx_t) + F.mse_loss(gy_p, gy_t)
 
 
-def guidance_loss(pred: torch.Tensor, target: torch.Tensor, grad_w: float = 0.01) -> Tuple[torch.Tensor, Dict[str, float]]:
+def guidance_loss(
+    pred_grid: torch.Tensor,
+    target_grid: torch.Tensor,
+    *,
+    pred_avg: Optional[torch.Tensor] = None,
+    target_avg: Optional[torch.Tensor] = None,
+    grad_w: float = 0.01,
+    avg_w: float = 0.1,
+    mean_consistency_w: float = 0.1,
+) -> Tuple[torch.Tensor, Dict[str, float]]:
     # 1) base per-pixel MSE
-    base_mse = F.mse_loss(pred, target, reduction="none")
+    base_mse = F.mse_loss(pred_grid, target_grid, reduction="none")
 
     # 2) hotspot-aware weighting (target is normalized to [0,1])
-    tmin = target.amin(dim=(2, 3), keepdim=True)
-    tmax = target.amax(dim=(2, 3), keepdim=True)
-    weight = 1.0 + 3.0 * (target - tmin) / (tmax - tmin + 1e-8)
+    tmin = target_grid.amin(dim=(2, 3), keepdim=True)
+    tmax = target_grid.amax(dim=(2, 3), keepdim=True)
+    weight = 1.0 + 3.0 * (target_grid - tmin) / (tmax - tmin + 1e-8)
 
     weighted_mse = (base_mse * weight).mean()
 
     # 3) gradient loss
-    grad = spatial_gradient_loss(pred, target)
+    grad = spatial_gradient_loss(pred_grid, target_grid)
 
     loss = weighted_mse + grad_w * grad
-    return loss, {
+    out: Dict[str, float] = {
         "mse": float(weighted_mse.detach().cpu()),
         "grad": float(grad.detach().cpu()),
         "loss": float(loss.detach().cpu()),
     }
+
+    # 4) avg temp auxiliary loss (normalized [0,1])
+    if pred_avg is not None and target_avg is not None:
+        pred_avg = pred_avg.view(-1, 1)
+        target_avg = target_avg.view(-1, 1)
+        avg_mse = F.mse_loss(pred_avg, target_avg)
+        loss = loss + avg_w * avg_mse
+        out["avg_mse"] = float(avg_mse.detach().cpu())
+        out["loss"] = float(loss.detach().cpu())
+
+        # 5) encourage avg prediction to match mean of predicted grid
+        grid_mean = pred_grid.mean(dim=(2, 3), keepdim=False).view(-1, 1)
+        mean_cons = F.l1_loss(grid_mean, pred_avg)
+        loss = loss + mean_consistency_w * mean_cons
+        out["mean_cons"] = float(mean_cons.detach().cpu())
+        out["loss"] = float(loss.detach().cpu())
+
+    return loss, out
 
 
 @dataclass
@@ -316,6 +379,16 @@ def main_train(args) -> None:
 
     opt = torch.optim.Adam(model.parameters(), lr=args.lr)
 
+    start_epoch = 1
+    resume_ckpt = getattr(args, "resume_ckpt", "")
+    if resume_ckpt:
+        ckpt = torch.load(resume_ckpt, map_location="cpu")
+        model.load_state_dict(ckpt["model"], strict=False)
+        if "opt" in ckpt:
+            opt.load_state_dict(ckpt["opt"])
+        start_epoch = int(ckpt.get("epoch", 0)) + 1
+        print(f"[resume] ckpt={resume_ckpt} | start_epoch={start_epoch} | target_epochs={args.epochs}")
+
     out_dir = args.out_dir if hasattr(args, "out_dir") and args.out_dir else os.path.join(os.path.dirname(__file__), "checkpoints")
     os.makedirs(out_dir, exist_ok=True)
 
@@ -341,7 +414,7 @@ def main_train(args) -> None:
     print(f"out_dir: {out_dir}")
     print("========================================")
 
-    for epoch in range(1, args.epochs + 1):
+    for epoch in range(start_epoch, args.epochs + 1):
         model.train()
 
         use_amp = bool(getattr(args, "amp", False) and device.type == "cuda")
@@ -349,44 +422,68 @@ def main_train(args) -> None:
         scaler = torch.cuda.amp.GradScaler(enabled=use_amp and amp_dtype == torch.float16)
 
         for it, batch in enumerate(train_loader):
+            totalp = batch.get("total_power")
+            avg = batch.get("avg_temp")
+
             power = batch["power"].to(device)
             layout = batch["layout"].to(device)
             temp = batch["temp"].to(device)
+            totalp = totalp.to(device) if totalp is not None else None
+            avg = avg.to(device) if avg is not None else None
 
             opt.zero_grad(set_to_none=True)
 
             if use_amp:
                 with torch.autocast(device_type="cuda", dtype=amp_dtype):
-                    pred = model(power, layout)
-                    loss, m = guidance_loss(pred, temp, grad_w=args.grad_w)
+                    pred_grid, pred_avg = model(power, layout, totalp)
+                    loss, m = guidance_loss(
+                        pred_grid,
+                        temp,
+                        pred_avg=pred_avg,
+                        target_avg=avg,
+                        grad_w=args.grad_w,
+                        avg_w=args.avg_w,
+                        mean_consistency_w=args.mean_consistency_w,
+                    )
 
                 scaler.scale(loss).backward()
                 scaler.step(opt)
                 scaler.update()
             else:
-                pred = model(power, layout)
-                loss, m = guidance_loss(pred, temp, grad_w=args.grad_w)
+                pred_grid, pred_avg = model(power, layout, totalp)
+                loss, m = guidance_loss(
+                    pred_grid,
+                    temp,
+                    pred_avg=pred_avg,
+                    target_avg=avg,
+                    grad_w=args.grad_w,
+                    avg_w=args.avg_w,
+                    mean_consistency_w=args.mean_consistency_w,
+                )
 
                 loss.backward()
                 opt.step()
 
             # Print the first-iteration (one batch) output once for quick sanity-check.
-            if epoch == 1 and it == 0:
+            if epoch == start_epoch and it == 0:
                 with torch.no_grad():
-                    b0_pred = pred[0].detach().cpu()
+                    b0_pred = pred_grid[0].detach().cpu()
                     b0_gt = temp[0].detach().cpu()
-                    b0_totalp = None
+                    b0_pred_avg = float(pred_avg[0].detach().cpu().item())
+                    b0_gt_avg = float(avg[0].detach().cpu().item()) if avg is not None else float("nan")
+                    b0_totalp = float(totalp[0].detach().cpu().item()) if totalp is not None else float("nan")
                     print(
                         f"[one-batch] ep {epoch:04d} it {it:04d} "
                         f"loss {m['loss']:.6f} mse {m['mse']:.6f} grad {m['grad']:.6f} "
+                        f"avg_pred {b0_pred_avg:.4f} avg_gt {b0_gt_avg:.4f} totalp {b0_totalp:.4f} "
                         f"pred(min/max/avg) {float(b0_pred.min()):.4f}/{float(b0_pred.max()):.4f}/{float(b0_pred.mean()):.4f} "
                         f"gt(min/max/avg) {float(b0_gt.min()):.4f}/{float(b0_gt.max()):.4f}/{float(b0_gt.mean()):.4f}"
                     )
 
             if it % args.print_every == 0:
                 with torch.no_grad():
-                    pmax = float(pred.max().item())
-                    pavg = float(pred.mean().item())
+                    pmax = float(pred_grid.max().item())
+                    pavg = float(pred_grid.mean().item())
                     tmax = float(temp.max().item())
                     tavg = float(temp.mean().item())
                 print(
@@ -395,22 +492,38 @@ def main_train(args) -> None:
                 )
 
         model.eval()
-        vm = {"loss": 0.0, "mse": 0.0, "grad": 0.0}
+        vm = {"loss": 0.0, "mse": 0.0, "grad": 0.0, "avg_mse": 0.0, "mean_cons": 0.0}
         steps = 0
         with torch.no_grad():
             for batch in val_loader:
+                totalp = batch.get("total_power")
+                avg = batch.get("avg_temp")
+
                 power = batch["power"].to(device)
                 layout = batch["layout"].to(device)
                 temp = batch["temp"].to(device)
+                totalp = totalp.to(device) if totalp is not None else None
+                avg = avg.to(device) if avg is not None else None
 
-                pred = model(power, layout)
-                _, m = guidance_loss(pred, temp, grad_w=args.grad_w)
+                pred_grid, pred_avg = model(power, layout, totalp)
+                _, m = guidance_loss(
+                    pred_grid,
+                    temp,
+                    pred_avg=pred_avg,
+                    target_avg=avg,
+                    grad_w=args.grad_w,
+                    avg_w=args.avg_w,
+                    mean_consistency_w=args.mean_consistency_w,
+                )
                 for k in vm:
                     vm[k] += m[k]
                 steps += 1
         for k in vm:
             vm[k] /= max(steps, 1)
-        print(f"Epoch {epoch:04d} | val loss {vm['loss']:.6f} mse {vm['mse']:.6f} grad {vm['grad']:.6f}")
+        print(
+            f"Epoch {epoch:04d} | val loss {vm['loss']:.6f} mse {vm['mse']:.6f} grad {vm['grad']:.6f} "
+            f"avg_mse {vm['avg_mse']:.6f} mean_cons {vm['mean_cons']:.6f}"
+        )
 
         if epoch % args.ckpt_every == 0:
             ckpt = {
@@ -565,13 +678,16 @@ def main_test(args) -> None:
 
     with torch.no_grad():
         for batch in loader:
+            totalp = batch.get("total_power")
+
             power = batch["power"].to(device)
             layout = batch["layout"].to(device)
             temp = batch["temp"].to(device)
+            totalp = totalp.to(device) if totalp is not None else None
 
-            pred = model(power, layout)
+            pred_grid, _pred_avg = model(power, layout, totalp)
 
-            pred_eval = pred.detach().cpu()
+            pred_eval = pred_grid.detach().cpu()
             temp_eval = temp.detach().cpu()
             if st is not None:
                 pred_eval = _denorm_temp_k(pred_eval, st)
@@ -623,11 +739,14 @@ def build_argparser() -> argparse.ArgumentParser:
     t.add_argument("--lr", type=float, default=1e-3)
     t.add_argument("--base", type=int, default=32)
     t.add_argument("--grad_w", type=float, default=0.1)
+    t.add_argument("--avg_w", type=float, default=0.1, help="weight for avg temp MSE head")
+    t.add_argument("--mean_consistency_w", type=float, default=0.1, help="weight for |mean(grid_pred)-avg_pred| loss")
     t.add_argument("--ckpt_every", type=int, default=1)
     t.add_argument("--print_every", type=int, default=10)
     t.add_argument("--qat", action="store_true", help="enable quantization-aware training")
     t.add_argument("--ckpt_tag", type=str, default="", help="tag appended in checkpoint filename")
     t.add_argument("--out_dir", type=str, default="", help="output directory for checkpoints")
+    t.add_argument("--resume_ckpt", type=str, default="", help="resume training from a saved checkpoint")
     t.add_argument("--seed", type=int, default=0)
     t.add_argument("--amp", action="store_true", help="enable mixed precision training on CUDA")
     t.add_argument("--amp_dtype", type=str, default="fp16", choices=["fp16", "bf16"], help="mixed precision dtype")

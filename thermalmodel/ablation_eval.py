@@ -120,11 +120,14 @@ def eval_ckpt(
 
     with torch.no_grad():
         for batch in loader:
+            totalp = batch.get("total_power")
+
             power = batch["power"].to(device)
             layout = batch["layout"].to(device)
             temp = batch["temp"].to(device)
+            totalp = totalp.to(device) if totalp is not None else None
 
-            pred = model(power, layout)
+            pred, _pred_avg = model(power, layout, totalp)
 
             pred_eval = pred.detach().cpu()
             temp_eval = temp.detach().cpu()
@@ -180,13 +183,13 @@ def benchmark_ckpt(
     with torch.no_grad():
         # Warmup
         for _ in range(warmup_batches):
-            _ = model(power, layout)
+            _ = model(power, layout, None)
         if device.type == "cuda":
             torch.cuda.synchronize()
 
         t0 = time.perf_counter()
         for _ in range(timed_batches):
-            _ = model(power, layout)
+            _ = model(power, layout, None)
         if device.type == "cuda":
             torch.cuda.synchronize()
         t1 = time.perf_counter()

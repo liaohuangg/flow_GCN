@@ -108,11 +108,14 @@ def eval_ckpt_with_extremes(
     best = None   # {rmse, i, j, pred, gt, units}
 
     for batch in loader:
+        totalp = batch.get("total_power")
+
         power = batch["power"].to(device)
         layout = batch["layout"].to(device)
         temp = batch["temp"].to(device)
+        totalp = totalp.to(device) if totalp is not None else None
 
-        pred = model(power, layout)
+        pred, _pred_avg = model(power, layout, totalp)
 
         # Evaluate metrics in CPU tensors to avoid mixing devices when saving figures
         pred_eval = pred.detach().cpu()
@@ -267,14 +270,14 @@ def benchmark_model(
         torch.cuda.synchronize()
 
     for _ in range(warmup_batches):
-        _ = model(power, layout)
+        _ = model(power, layout, None)
 
     if device.type == "cuda":
         torch.cuda.synchronize()
 
     t0 = time.perf_counter()
     for _ in range(timed_batches):
-        _ = model(power, layout)
+        _ = model(power, layout, None)
 
     if device.type == "cuda":
         torch.cuda.synchronize()

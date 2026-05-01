@@ -17,6 +17,8 @@ def _project_root() -> str:
 class MinMaxStats:
     power_min: float
     power_max: float
+    total_power_min: float
+    total_power_max: float
     temp_min: float
     temp_max: float
 
@@ -24,6 +26,8 @@ class MinMaxStats:
         return {
             "power_min": float(self.power_min),
             "power_max": float(self.power_max),
+            "total_power_min": float(self.total_power_min),
+            "total_power_max": float(self.total_power_max),
             "temp_min": float(self.temp_min),
             "temp_max": float(self.temp_max),
         }
@@ -147,9 +151,11 @@ def list_cases(powercsv_dir: str) -> List[Tuple[int, int]]:
 
 def compute_minmax(data_root: str, grid_size: int = 64) -> MinMaxStats:
     power_dir = os.path.join(data_root, "powercsv")
+    totalp_dir = os.path.join(data_root, "totalpowercsv")
     temp_dir = os.path.join(data_root, "tempcsv")
 
     pmins, pmaxs = [], []
+    tpmins, tpmaxs = [], []
     tmins, tmaxs = [], []
 
     for i, j in list_cases(power_dir):
@@ -161,9 +167,16 @@ def compute_minmax(data_root: str, grid_size: int = 64) -> MinMaxStats:
         tmins.append(float(tt.min()))
         tmaxs.append(float(tt.max()))
 
+        # total power is stored as a scalar per case
+        tp = read_scalar_csv(os.path.join(totalp_dir, f"system_totalpower_{i}_{j}.csv"))
+        tpmins.append(float(tp))
+        tpmaxs.append(float(tp))
+
     return MinMaxStats(
         power_min=float(np.min(pmins)),
         power_max=float(np.max(pmaxs)),
+        total_power_min=float(np.min(tpmins)),
+        total_power_max=float(np.max(tpmaxs)),
         temp_min=float(np.min(tmins)),
         temp_max=float(np.max(tmaxs)),
     )
@@ -185,6 +198,8 @@ class ThermalDataset(Dataset):
         self.hotspot_root = os.path.join(_project_root(), hotspot_cfg_rel)
 
         self.power_dir = os.path.join(self.data_root, "powercsv")
+        self.totalp_dir = os.path.join(self.data_root, "totalpowercsv")
+        self.avgtemp_dir = os.path.join(self.data_root, "avgtempcsv")
         self.temp_dir = os.path.join(self.data_root, "tempcsv")
 
         self.cases = cases if cases is not None else list_cases(self.power_dir)
@@ -206,6 +221,8 @@ class ThermalDataset(Dataset):
 
         p_vec = read_index_value_csv(os.path.join(self.power_dir, f"system_power_{i}_{j}.csv"))
         t_vec = read_index_value_csv(os.path.join(self.temp_dir, f"system_temp_{i}_{j}.csv"))
+        tp = read_scalar_csv(os.path.join(self.totalp_dir, f"system_totalpower_{i}_{j}.csv"))
+        avg_t = read_scalar_csv(os.path.join(self.avgtemp_dir, f"system_avgtemp_{i}_{j}.csv"))
 
         p_grid = vec_to_grid(p_vec, grid_size=self.power_grid_size)
         t_grid = vec_to_grid(t_vec, grid_size=self.temp_grid_size)
@@ -214,10 +231,19 @@ class ThermalDataset(Dataset):
         p01 = minmax_scale(p_grid, self.stats.power_min, self.stats.power_max)
         t01 = minmax_scale(t_grid, self.stats.temp_min, self.stats.temp_max)
 
+        # total power is a scalar; normalize it and also scale by (128*128) as requested
+        tp_scaled = tp / float(self.power_grid_size * self.power_grid_size)
+        tp01 = minmax_scale(np.asarray(tp_scaled, dtype=np.float32), self.stats.total_power_min / float(self.power_grid_size * self.power_grid_size), self.stats.total_power_max / float(self.power_grid_size * self.power_grid_size))
+
+        # avg temp is a scalar in the same units as temp grid; normalize with temp stats
+        avg01 = minmax_scale(np.asarray(avg_t, dtype=np.float32), self.stats.temp_min, self.stats.temp_max)
+
         # tensors
         power = torch.from_numpy(p01).unsqueeze(0)  # (1,Hp,Wp)
         layout = torch.from_numpy(mask).unsqueeze(0)  # (1,Hp,Wp)
         temp = torch.from_numpy(t01).unsqueeze(0)  # (1,Ht,Wt)
+        total_power = torch.tensor([[float(tp01)]], dtype=torch.float32).view(1)  # (1,)
+        avg_temp = torch.tensor([[float(avg01)]], dtype=torch.float32).view(1)  # (1,)
 
         return {
             "i": i,
@@ -225,4 +251,6 @@ class ThermalDataset(Dataset):
             "power": power,
             "layout": layout,
             "temp": temp,
+            "total_power": total_power,
+            "avg_temp": avg_temp,
         }
