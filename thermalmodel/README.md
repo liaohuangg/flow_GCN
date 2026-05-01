@@ -1,315 +1,353 @@
-# Thermal Guidance Model (`guidance_model.py`)
+# thermalmodel (Thermal Guidance Model)
 
-本文档描述 `/root/placement/flow_GCN/thermalmodel/guidance_model.py` 当前版本的 **输入/输出**、**网络结构**、**损失函数**、**训练与测试流程** 以及 **checkpoint 续训机制**。
+这个目录主要包含 **ThermalGuidanceNet** 的训练 / 评测 / 消融与量化相关脚本。
 
-> 目标任务：训练一个快速 surrogate model，从 **power map + layout mask** 预测 **64×64 温度场**，用于 placement / diffusion guidance。
+> 运行方式：这些脚本大多允许你在 `thermalmodel/` 目录内直接运行（代码会把项目根目录加入 `sys.path`）。
 
----
+## 1. 模型结构：`ThermalGuidanceNet`（`guidance_model.py`）
 
-## 1) 数据与归一化（ThermalDataset）
+核心模型定义在：`thermalmodel/guidance_model.py:107`。
 
-数据加载在 `thermalmodel/dataLoader.py`。
+**输入/输出张量约定（见 `ThermalGuidanceNet` docstring 与 forward）：**
 
-- `power` 与 `temp` 都做 **min-max 归一化到 [0,1]**（使用全数据集标量 min/max）：
-  - `p01 = (p - power_min) / (power_max - power_min)`
-  - `t01 = (t - temp_min) / (temp_max - temp_min)`
-- 因此 `ThermalDataset.__getitem__()` 返回的：
-  - `batch["power"]`：归一化后 `(B,1,128,128)`
-  - `batch["layout"]`：mask `(B,1,128,128)`（0/1）
-  - `batch["temp"]`：归一化后 `(B,1,64,64)`
+- 输入
+  - `power_grid`: `(B, 1, 128, 128)`，来自 `ThermalDataset` 的 power map（min-max 归一化到 [0,1]）
+  - `layout_mask`: `(B, 1, 128, 128)`，从 `system.flp` 解析得到的 0/1 布局 mask（chiplet 区域为 1）
+  - `total_power`: `(B, 1)`，每个 case 的总功耗标量（数据集内已做 scaling+minmax）
+- 输出
+  - `temp_grid`: `(B, 1, 64, 64)`，预测温度场（训练/评测时通常是归一化值；评测可反归一化回 Kelvin）
+  - `avg_temp`: `(B, 1)`，预测的平均温度标量（同样是归一化值；用于辅助 loss 以及推理时做全局均值校准）
 
-关键实现：`thermalmodel/dataLoader.py:214-220`。
+**网络结构（高层概览）：**
 
-### 反归一化（回到 Kelvin）
-若要把网络输出/GT 从 [0,1] 还原到 Kelvin（K）：
+- 输入通道拼接：`[power, layout, x_coord, y_coord]` 共 4 通道（`guidance_model.py:199-205`）
+- 编码器：多层轻量 inverted residual block（MobileNet 风格）逐步下采样 128→64→32→16（`d1/d2/d3`）
+- bottleneck：在最低分辨率处提特征（`bottleneck`）
+- 条件注入：用 **FiLM** 把 `total_power` 注入到 bottleneck 特征（`guidance_model.py:162-222`）
+- 解码器：双线性上采样 + skip concat + conv 融合，回到 64×64（`guidance_model.py:227-237`）
+- 平均温度 head：对 bottleneck 做全局池化 + MLP 输出 `avg_temp`（`guidance_model.py:175-226`）
+- 全局校准：最后把 `temp_grid` 整体平移，使 `mean(temp_grid)` 与 `avg_temp` 一致（`guidance_model.py:241-245`）
 
-```python
-T = t01 * (temp_max - temp_min) + temp_min
-```
+> 备注：模型里包含 `QuantStub/DeQuantStub` 与 QAT 相关配置，用于可选的量化训练流程；FP32 训练时不需要开启。
 
-在当前 `guidance_model.py` 的 `test` 中：
-- **反归一化使用 `dataset.stats.temp_min/temp_max`**（与数据加载一致）。
+## 2. 数据集与 HotSpot 仿真数据（ground truth）
 
----
+数据读取由 `thermalmodel/dataLoader.py:ThermalDataset` 完成。
 
-## 2) 模型输入/输出
+默认数据目录（相对项目根目录）：
 
-### 输入
-模型采用 CoordConv 思路，最终输入通道为 4：
+- thermal map 数据：`Dataset/dataset/output/thermal/thermal_map/`
+  - `powercsv/system_power_{i}_{j}.csv`
+  - `tempcsv/system_temp_{i}_{j}.csv`  ← **HotSpot 热仿真温度场（ground truth）**
+  - `totalpowercsv/system_totalpower_{i}_{j}.csv`
+  - `avgtempcsv/system_avgtemp_{i}_{j}.csv`
 
-- `power_grid`: `(B,1,128,128)`
-- `layout_mask`: `(B,1,128,128)`
-- `x_coord_map`: `(B,1,128,128)`，线性分布在 [-1,1]
-- `y_coord_map`: `(B,1,128,128)`，线性分布在 [-1,1]
+- floorplan：`Dataset/dataset/output/thermal/hotspot_config/system_{i}_config/system.flp`
 
-拼接后：
+`ThermalDataset.__getitem__` 会返回 `{i, j, power, layout, temp, total_power, avg_temp}`（见 `dataLoader.py:219-256`），其中 `temp` 来源就是 `tempcsv/system_temp_{i}_{j}.csv`。
 
-```text
-X = concat([power_grid, layout_mask, xmap, ymap], dim=1)
-X.shape = (B,4,128,128)
-```
+训练保存 checkpoint 时，会把数据集的 min/max（尤其是 `temp_min/temp_max`）写入 `ckpt["stats"]`，用于评测时把归一化温度反归一化回 **Kelvin**。
 
-### 输出
-- `T_pred`: `(B,1,64,64)`
-- 训练时输出与标签 `temp` 在同一尺度（归一化 [0,1]）。
-- 测试/可视化时可以反归一化到 K。
+## 3. FP32 训练方式（`guidance_model.py train`）
 
----
+训练入口在：`thermalmodel/guidance_model.py:337 main_train()`，命令行子命令是：`guidance_model.py train`（见 `guidance_model.py:732+`）。
 
-## 3) 网络结构：ThermalGuidanceNet（当前版本）
+### 3.1 训练/验证划分
 
-当前 `ThermalGuidanceNet` 是对称 U-Net 风格结构，核心目标是增强热扩散任务所需的全局感受野。
+- `ThermalDataset(...)` 全量样本
+- `torch.utils.data.random_split` 按 **90% train / 10% val** 划分
+- split 的随机性由 `--seed` 控制（`guidance_model.py:348-356`）
 
-### 关键模块
+### 3.2 Loss（监督学习目标）
 
-- `ConvGNAct`: Conv2d + GroupNorm + GELU
-- `LargeKernelBlock`: 7×7 depthwise conv 的残差块（扩大感受野，用于扩散/全局耦合）
-- `ASPP`: Atrous Spatial Pyramid Pooling（dilation=2/4/6）捕捉多尺度上下文
+loss 在 `guidance_model.py:268 guidance_loss()`：
 
-### 分辨率路径（对齐 64×64 目标网格）
+- per-pixel MSE（并对热点区域做加权，强调 hotspot 部分）
+- + `grad_w * spatial_gradient_loss`（Sobel 梯度一致性）
+- + 可选的 `avg_w * MSE(avg_temp)`（平均温度 head 的监督）
+- + 可选的 mean consistency（鼓励 `mean(temp_grid)` 与 `avg_temp` 一致）
 
-- **Stem**：`128×128 → 64×64`（stride=2），从一开始就对齐温度标签分辨率
-- **Encoder**：`64→32→16→8`
-- **Bottleneck**：LargeKernel + ASPP + LargeKernel
-- **Decoder**：`8→16→32→64`，与 encoder 同尺度 skip concat 融合
-- **Head**：输出 1 通道 `64×64`
+### 3.3 FP32 训练命令示例
 
----
-
-## 4) 损失函数：guidance_loss
-
-用于回归温度场，并同时强调热点与物理平滑性。
-
-组成：
-
-1. **Hotspot-aware weighted L1**（主损失）
-2. **Gradient loss（Sobel）**：约束一阶梯度，使热点边界更准确
-3. **Laplacian loss（physics-informed）**：约束二阶导（拉普拉斯），贴近热传导/泊松方程先验
-
-总损失：
-
-```text
-loss = weighted_l1 + grad_w * grad_loss + 0.05 * laplacian_loss
-```
-
-训练时会打印/记录：`l1, mse(监控), grad, lap, loss`。
-
----
-
-## 5) 训练（train）
-
-- Optimizer：`AdamW(lr=args.lr, weight_decay=1e-4)`
-- Scheduler：`CosineAnnealingLR(T_max=args.epochs)`
-
-### 从头训练示例（100 epochs）
+在 `thermalmodel/` 目录下：
 
 ```bash
-python /root/placement/flow_GCN/thermalmodel/guidance_model.py train \
-  --epochs 100 --batch_size 8 --lr 5e-4 --base 64 --grad_w 0.1 \
-  --ckpt_every 10 --print_every 10
-```
-
----
-
-## 6) Checkpoint 设计与续训练（resume）
-
-训练保存的 `.pth` checkpoint（在 `thermalmodel/checkpoints/`）包含：
-
-- `epoch`: 当前 epoch
-- `model`: `state_dict`
-- `opt`: optimizer state
-- `scheduler`: scheduler state（**必须有，用于严格续训**）
-- `stats`: 数据集 min/max（用于 test 阶段反归一化到 K）
-- `train_args`: 记录训练参数（含 epochs/lr/base/grad_w 等）
-
-### 严格续训
-当前代码 **不兼容缺少 `scheduler` 字段的旧 checkpoint**：
-- 若 `--resume_ckpt` 指向的 `.pth` 没有 `scheduler`，会直接报错。
-
-续训示例：
-
-```bash
-python /root/placement/flow_GCN/thermalmodel/guidance_model.py train \
-  --resume_ckpt /root/placement/flow_GCN/thermalmodel/checkpoints/xxx.pth \
-  --epochs 200 --batch_size 8 --lr 5e-4 --base 64 --grad_w 0.1
-```
-
----
-
-## 7) 测试与绘图（test）
-
-测试流程：
-
-1. 推理得到 `pred_norm`（[0,1]）与 `gt_norm`（[0,1]）
-2. 使用 `dataset.stats.temp_min/temp_max` 反归一化得到 `pred_K/gt_K`
-3. 在 **K 尺度**上计算并打印：
-   - `max_rmse / min_rmse / mean_rmse`
-   - `max_ae`
-   - `mean_rmspe`（%）
-4. 选取 RMSE 最差样本，绘制 pred/gt 热图（单位 K）
-
-示例：
-
-```bash
-python /root/placement/flow_GCN/thermalmodel/guidance_model.py test \
-  --ckpt /root/placement/flow_GCN/thermalmodel/checkpoints/xxx.pth \
-  --batch_size 8 \
-  --out_fig_dir /root/placement/flow_GCN/thermalmodel/test_result/test_guidance_fig
-```
-
-绘图函数：`thermalmodel/draw_thermal_fig.py:plot_thermal_grid_overlay()`。
-
----
-
-## 8) 三种训练/量化方式（FP32 / QAT / PTQ-fp16）
-
-本仓库目前提供 3 套流程，覆盖 **训练精度** 与 **GPU 推理加速（fp16）** 两类需求：
-
-1) **FP32 训练（不做量化）**：基线/最高精度；也是后续 PTQ-fp16 的来源。
-2) **QAT 训练（训练时量化感知）**：训练阶段插入 fake-quant/observer，让模型参数在训练中“看到”量化误差（当前主要用于对齐实验/保留路径；仓库不再提供 int8 PTQ 导出）。
-3) **PTQ（训练后导出：fp16）**：从一个 FP32 checkpoint 导出 fp16 权重，用于 GPU 推理加速/省显存。
-
-> 说明：下面命令中的超参仅为示例；以你的实际实验配置为准。
->
-> 当前代码会把 `ep/seed/bs/lr/base/grad_w` 写入 checkpoint 文件名，方便对比实验。
-
-### 8.1 FP32 训练（不做量化）
-
-**是什么**：标准浮点训练（默认 fp32），不插入任何量化模块。
-
-**适用场景**：
-- 追求最优精度（作为基线）
-- 需要一个“干净”的 FP32 checkpoint 作为后续 PTQ-fp16 的输入
-
-**命令（直接训练）**：
-
-```bash
-python /root/placement/flow_GCN/thermalmodel/guidance_model.py train \
-  --epochs 200 \
-  --batch_size 8 \
-  --lr 5e-4 \
-  --base 64 \
-  --grad_w 0.1 \
+python guidance_model.py train \
+  --epochs 200 --batch_size 8 --lr 2e-4 --base 96 \
+  --grad_w 0.1 --avg_w 0.1 --mean_consistency_w 0.1 \
+  --ckpt_every 5 --print_every 10 \
   --seed 0 \
-  --ckpt_every 5 \
-  --print_every 10 \
-  --ckpt_tag fp32 \
-  --out_dir /root/placement/flow_GCN/thermalmodel/checkpoints/fp32
+  --ckpt_tag b96_lr2e-4_totalp_avg_resume \
+  --out_dir checkpoints/guidance_b96_lr2e-4_ep200_20260430_resume
 ```
 
-**产物**：
-- FP32 checkpoint（示例）：
-  - `checkpoints/fp32/guidance_net_fp32_ep0200_seed0_bs8_lr5e-04_base64_gw0p1.pth`
+> 如果要混合精度训练（AMP）可以加：`--amp --amp_dtype fp16|bf16`（见 `guidance_model.py:420+`）。
 
----
+## 4. FP32 模型评估（与 HotSpot 仿真对比）
 
-### 8.2 QAT 训练（Quantization-Aware Training，训练时量化感知）
+评估脚本推荐使用：`thermalmodel/eval_guidance_ckpt.py`。
 
-**是什么**：训练阶段在计算图中插入 observer / fake-quant（FX graph mode），让训练过程显式感知量化误差。
+它会：
+- 用与训练同样的 `ThermalDataset` 和相同 90/10 split 逻辑生成 test set（`eval_guidance_ckpt.py:76-89`）
+- 前向得到 `pred temp_grid`
+- 若 ckpt 内含 `stats(temp_min/temp_max)`，则将 pred 与 gt 从 [0,1] 反归一化回 **Kelvin**（`eval_guidance_ckpt.py:124-129`）
+- 计算 per-sample RMSE 等指标，并找 best/worst case（或 `--topk K` 时输出 top-K best/worst）
 
-**适用场景**：
-- 你需要保留/对齐 QAT 实验流程（例如做 ablation 或复现实验设置）
-- 当前仓库目标仍以 **GPU fp16/AMP** 为主
+### 4.1 指标（单位：K）
 
-**实现要点（当前代码）**：
-- `--qat` 会走 `torch.ao.quantization.quantize_fx.prepare_qat_fx(...)`
-- 训练保存的主 checkpoint 仍是“训练态”（包含 fake-quant/observer 结构的 state_dict）
+`eval_guidance_ckpt.py` 输出的关键指标：
+- RMSE（每个样本在全像素上的 RMSE）
+- max absolute error
+- RMSPE (%)
+- mean_grad（Sobel 梯度差）
 
-**命令（QAT 训练）**：
+这些指标的 **ground truth** 直接来自 HotSpot 仿真输出 `tempcsv/system_temp_{i}_{j}.csv`。
+
+### 4.2 评估命令示例
 
 ```bash
-python /root/placement/flow_GCN/thermalmodel/guidance_model.py train \
-  --epochs 200 \
-  --batch_size 8 \
-  --lr 5e-4 \
-  --base 64 \
-  --grad_w 0.1 \
-  --seed 0 \
-  --ckpt_every 5 \
-  --print_every 10 \
-  --qat \
-  --ckpt_tag qat \
-  --out_dir /root/placement/flow_GCN/thermalmodel/checkpoints/qat
+python eval_guidance_ckpt.py \
+  --ckpt /path/to/fp32_ckpt.pth \
+  --eval_bs 8 --seed 0 --device cuda
 ```
 
-**产物**：
-- QAT 训练态 checkpoint（示例）：
-  - `checkpoints/qat/guidance_net_qat_ep0200_seed0_bs8_lr5e-04_base64_gw0p1.pth`
-
----
-
-### 8.3 PTQ（Post-Training Quantization，训练后导出：fp16）
-
-**是什么**：从一个训练好的 FP32 checkpoint 导出 **fp16 权重**（不需要校准数据），用于 GPU 推理加速/省显存。
-
-**适用场景**：
-- 目标是 GPU 推理（优先 fp16）
-- 不需要 int8
-
-**命令（从 FP32 checkpoint 导出 fp16）**：
+如果要导出 best/worst（或 top-k）预测 vs 仿真图：
 
 ```bash
-python /root/placement/flow_GCN/thermalmodel/guidance_pipeline.py export_ptq \
-  --src_ckpt /root/placement/flow_GCN/thermalmodel/checkpoints/fp32/<YOUR_FP32_CKPT>.pth \
-  --out_dir /root/placement/flow_GCN/thermalmodel/checkpoints/ptq
+python eval_guidance_ckpt.py \
+  --ckpt /path/to/fp32_ckpt.pth \
+  --eval_bs 8 --seed 0 --device cuda \
+  --out_fig_dir /root/placement/flow_GCN/thermalmodel/test_result/fig \
+  --topk 50
 ```
 
-**产物**：
-- fp16 checkpoint（示例）：
-  - `checkpoints/ptq/<YOUR_FP32_CKPT>_fp16.pth`
+导出的图片文件名会包含 case 编号 `(i,j)`，并区分：
+- `*_pred_*.png`：模型预测温度图
+- `*_sim.png`：HotSpot 热仿真温度图（ground truth）
 
----
+每张图里都会标注 Max / AVG 温度数值。
 
-## 9) 一键自动化脚本（推荐）
+## 目录内容速览
 
-在 `thermalmodel/` 目录下提供了 shell 脚本：
+- `guidance_model.py`
+  - **核心**：模型结构 `ThermalGuidanceNet` + CLI（`train`/`test`）
+  - 训练会保存 checkpoint（`.pth`），并在 `test` 时可输出 worst-case 图
+
+- `dataLoader.py`
+  - `ThermalDataset`：从 `Dataset/dataset/output/thermal/...` 读取 power/temp/totalpower/avgtemp
+  - 同时从 `hotspot_config/.../system.flp` 解析布局，生成 layout mask
+  - 做 min-max 归一化，并在 ckpt 内保存 `stats` 便于评测时反归一化回 **Kelvin**
+
+- `eval_guidance_ckpt.py`
+  - 对单个 checkpoint 做评测（RMSE / grad / max AE / RMSPE 等），并可导出 best/worst（或 top-k）样本图
+  - 可选 `--bench` 做纯模型前向 latency benchmark
+
+- `ablation_eval.py`
+  - 给定 fp32/qat checkpoint 目录：
+    1) 遍历评测并按 `mean_rmse` 选 best fp32 与 best qat
+    2) 从 best fp32 导出 **PTQ-fp16**（权重 half）
+    3) 对三种变体（fp32/qat/ptq-fp16）评测 + benchmark
+    4) 可选写出 JSON 汇总
+
+- `guidance_pipeline.py`
+  - 一个“管道式”包装：提供 `train_fp32` / `train_qat` / `export_ptq` 子命令
+  - 其中训练子命令内部是 `os.system(...)` 去调用 `guidance_model.py train ...`
+  - `ablation_eval.py` 会直接 import 这里的 `export_fp16_from_fp32()`
+
+- `draw_thermal_fig.py`
+  - `plot_thermal_grid_overlay()`：把 2D thermal grid 画成图，并叠加 `system.flp` 的 chiplet 矩形框
 
 - `auto_train_guidance.sh`
+  - 一键：fp32 训练 + QAT 训练 + ablation（选 best + 导出 fp16 + benchmark）
 
-它会按顺序执行：fp32 训练 → QAT 训练 → 从 fp32 最终 epoch checkpoint 导出 fp16。
+- `adjust_parameter.sh`
+  - fp32 超参 sweep：训练多组 (BASE, LR, GRAD_W)，并对每个保存的 ckpt（每 5 epoch）做评测、写日志和 worst-case 图
 
-**默认一键运行**：
+- `checkpoints/`
+  - 保存训练产物（按脚本可能在 `checkpoints/fp32`、`checkpoints/qat`、`checkpoints/ptq`、`checkpoints/fp32_sweep/...` 等）
+
+- `eval_logs/` / `logs/` / `worst_figs/`
+  - 评测/训练日志与 worst-case 可视化输出（具体由脚本决定输出目录）
+
+## 文件调用关系（依赖 / 调用链）
+
+下面是“谁调用谁”的主链路（从入口脚本到核心库）：
+
+```
+auto_train_guidance.sh
+  -> guidance_model.py train (fp32)
+  -> guidance_model.py train --qat
+  -> ablation_eval.py
+       -> guidance_model.ThermalGuidanceNet
+       -> dataLoader.ThermalDataset
+       -> guidance_pipeline.export_fp16_from_fp32
+
+adjust_parameter.sh
+  -> guidance_model.py train
+  -> eval_guidance_ckpt.py
+       -> guidance_model.ThermalGuidanceNet
+       -> dataLoader.ThermalDataset
+       -> draw_thermal_fig.plot_thermal_grid_overlay
+
+(guidance_model.py test)
+  -> draw_thermal_fig.plot_thermal_grid_overlay
+  -> dataLoader.ThermalDataset
+```
+
+更细的 Python import 依赖：
+
+- `guidance_model.py` 依赖：`dataLoader.py`、`draw_thermal_fig.py`
+- `eval_guidance_ckpt.py` 依赖：`dataLoader.py`、`guidance_model.py`、`draw_thermal_fig.py`
+- `ablation_eval.py` 依赖：`dataLoader.py`、`guidance_model.py`、`guidance_pipeline.py`
+- `guidance_pipeline.py` 依赖：`guidance_model.py`（通过命令行调用）
+
+## 数据目录约定（非常重要）
+
+`ThermalDataset` 默认读取（相对项目根目录，即 `thermalmodel/..`）：
+
+- thermal map 数据：`Dataset/dataset/output/thermal/thermal_map/`
+  - `powercsv/system_power_{i}_{j}.csv`
+  - `tempcsv/system_temp_{i}_{j}.csv`
+  - `totalpowercsv/system_totalpower_{i}_{j}.csv`
+  - `avgtempcsv/system_avgtemp_{i}_{j}.csv`
+
+- floorplan：`Dataset/dataset/output/thermal/hotspot_config/system_{i}_config/system.flp`
+
+如果你数据不在这个位置，需要修改 `dataLoader.py:ThermalDataset(...)` 里的 `thermal_map_rel/hotspot_cfg_rel` 参数。
+
+## 常用使用方式
+
+下面命令都以在 `thermalmodel/` 目录下执行为例。
+
+### 1) 一键训练 + QAT + 消融（推荐）
 
 ```bash
-cd /root/placement/flow_GCN/thermalmodel
 ./auto_train_guidance.sh
 ```
 
-**改参数示例**：
+常用：跳过 fp32（如果已经有 fp32 ckpt）：
 
 ```bash
-./auto_train_guidance.sh --seed 1 --lr 3e-4 --base 32 --epochs 200 --ckpt-every 5
+./auto_train_guidance.sh --no-fp32
 ```
 
-**只跑 fp32**：
+脚本默认用 `conda run -n chipdiffusion python -u ...`。如果你环境名不同：
 
 ```bash
-./auto_train_guidance.sh --no-qat --no-ptq
+./auto_train_guidance.sh --conda-env <YOUR_ENV>
 ```
 
----
+### 2) 直接训练（Python CLI）
 
-## 10) GPU 混合精度（AMP / fp16m / bf16）
-
-如果目标是 **GPU 上更快/更省显存**，优先考虑 AMP。
-
-- `fp16m` 通常指 **混合精度训练（mixed precision）**：大部分算子用 fp16/bf16 计算，但保留必要部分为 fp32（例如某些累加、以及 fp16 下用 GradScaler 避免下溢）。
-- 本仓库在 `guidance_model.py train` 提供：
-  - `--amp`：开启 CUDA AMP
-  - `--amp_dtype {fp16|bf16}`：选择 autocast 的 dtype
-
-**推荐（大多数 NVIDIA GPU）：fp16 AMP**
+FP32：
 
 ```bash
-python /root/placement/flow_GCN/thermalmodel/guidance_model.py train \
-  --epochs 200 --batch_size 8 --lr 5e-4 --base 64 --grad_w 0.1 --seed 0 \
+python guidance_model.py train \
+  --epochs 200 --batch_size 8 --lr 5e-4 --base 64 --grad_w 0.1 \
   --ckpt_every 5 --print_every 10 \
-  --ckpt_tag fp32 --out_dir /root/placement/flow_GCN/thermalmodel/checkpoints/fp32 \
-  --amp --amp_dtype fp16
+  --ckpt_tag fp32 --out_dir checkpoints/fp32
 ```
 
-**也可以用脚本一键开启**：
+QAT：
 
 ```bash
-./auto_train_guidance.sh --amp --amp-dtype fp16
+python guidance_model.py train \
+  --epochs 200 --batch_size 8 --lr 5e-4 --base 64 --grad_w 0.1 \
+  --ckpt_every 5 --print_every 10 \
+  --qat --ckpt_tag qat --out_dir checkpoints/qat
 ```
+
+从 checkpoint 继续训练：
+
+```bash
+python guidance_model.py train --resume_ckpt <path/to/ckpt.pth --epochs 200 ...
+```
+
+（可选）CUDA AMP：
+
+```bash
+python guidance_model.py train --amp --amp_dtype fp16 ...
+```
+
+### 3) 评测单个 checkpoint
+
+```bash
+python eval_guidance_ckpt.py \
+  --ckpt <path/to/ckpt.pth> \
+  --eval_bs 8 --seed 0 --device cuda \
+  --out_fig_dir worst_figs/single_ckpt
+```
+
+带 benchmark：
+
+```bash
+python eval_guidance_ckpt.py --ckpt <ckpt.pth> --bench --bench_bs 8 --device cuda
+```
+
+### 4) 消融评测（选 best + 导出 fp16 + benchmark + JSON）
+
+```bash
+python ablation_eval.py \
+  --fp32_dir checkpoints/fp32 \
+  --qat_dir checkpoints/qat \
+  --ptq_dir checkpoints/ptq \
+  --eval_bs 8 --bench_bs 8 --device cuda \
+  --out_json logs/ablation.json
+```
+
+### 5) 超参 sweep（fp32）
+
+```bash
+./adjust_parameter.sh
+```
+
+可用环境变量覆盖默认值（见脚本顶部的 defaults）：
+
+```bash
+CONDA_ENV=chipdiffusion EPOCHS=200 BS=8 SEED=0 ./adjust_parameter.sh
+```
+
+## Checkpoint 命名/字段说明（训练输出）
+
+`guidance_model.py` 保存的 ckpt（`.pth`）通常包含：
+
+- `model`: `state_dict`
+- `opt`: optimizer state（用于 resume）
+- `epoch`
+- `stats`: 数据 min/max（用于把预测从 norm 反归一化回 Kelvin）
+- 训练超参：`base/batch_size/lr/grad_w/seed/ckpt_tag` 等
+
+文件名形如：
+
+```
+guidance_net_{ckpt_tag}_epXXXX_seed{seed}_bs{bs}_lr{lr_tok}_base{base}_gw{gw_tok}.pth
+```
+
+## 备注
+
+- `guidance_pipeline.py` 的 `train_fp32/train_qat` 是包装命令（内部 `os.system` 调用），功能上与直接运行 `guidance_model.py train ...` 等价。
+- `eval_guidance_ckpt.py` 的日志输出是单行 `metrics ...`，适合用脚本批量 grep/汇总。
+
+## 训练参数记录（resume from 80 -> 200, seed0）
+
+对应日志：`eval_logs/train_resume_20260430_to200_from80_seed0.log`
+
+- resume_ckpt:
+  `/root/placement/flow_GCN/thermalmodel/checkpoints/guidance_b96_lr2e-4_ep200_20260430_resume/guidance_net_b96_lr2e-4_totalp_avg_resume_ep0080_seed0_bs8_lr2e-04_base96_gw0p1.pth`
+- start_epoch: 81
+- target_epochs: 200
+- device: cuda
+- batch_size: 8
+- seed: 0
+- amp: False（这次训练不是 fp16 AMP 训练）
+- ckpt_tag: `b96_lr2e-4_totalp_avg_resume`
+- out_dir:
+  `/root/placement/flow_GCN/thermalmodel/checkpoints/guidance_b96_lr2e-4_ep200_20260430_resume`
+
+从 ckpt 文件名与保存目录可读到的关键超参：
+- base: 96
+- lr: 2e-4
+- grad_w: 0.1
+
+如果你要做“训练时 fp16（AMP）”的同参数训练：
+- 在 `guidance_model.py train ...` 的同一组参数上额外加：`--amp --amp_dtype fp16`
