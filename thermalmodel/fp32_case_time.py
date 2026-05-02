@@ -1,15 +1,14 @@
-"""fp32_ptqfp16_case_time.py
+"""fp32_case_time.py
 
-Re-time the PTQ fp16 checkpoint using true fp16 inference (model+inputs in fp16 on CUDA)
-and update ONLY the [ptq-fp16] block in:
+Re-time the FP32 checkpoint including:
+  1) per-case end-to-end time (includes DataLoader + H2D copy) and
+  2) per-case model forward time (excludes DataLoader/H2D).
+
+Then update ONLY the [fp32] block in:
   /root/placement/flow_GCN/thermalmodel/test_result/per_case_time.log
 
-All other sections (fp32 / hotspot / comparison) are left untouched.
-
 Usage (chipdiffusion env):
-  python fp32_ptqfp16_case_time.py --n_cases 1000 --eval_bs 8 --device cuda
-
-Note: If device is CPU, fp16 speedups are not expected and fp16 kernels may be unsupported.
+  python fp32_case_time.py --n_cases 1000 --eval_bs 8 --device cuda
 """
 
 import argparse
@@ -53,7 +52,7 @@ def _mk_dataset(*, thermal_map_root: str, cases):
 
 
 @torch.no_grad()
-def time_ptq_fp16_ckpt(
+def time_fp32_ckpt(
     ckpt_path: str,
     *,
     n_cases: int,
@@ -73,12 +72,6 @@ def time_ptq_fp16_ckpt(
     ckpt = torch.load(ckpt_path, map_location="cpu")
     model = ThermalGuidanceNet(base=int(ckpt.get("base", 32))).to(dev)
     model.load_state_dict(ckpt["model"], strict=False)
-
-    # FORCE fp16 execution on CUDA: model params + inputs in fp16.
-    # (No autocast needed if everything is already half; this avoids silent fp32 fallbacks.)
-    if dev.type == "cuda":
-        model = model.to(dtype=torch.float16)
-
     model.eval()
 
     cases = _list_first_n_cases(thermal_map_root, n_cases)
@@ -111,10 +104,6 @@ def time_ptq_fp16_ckpt(
         totalp = totalp.to(dev, non_blocking=False) if totalp is not None else None
 
         if dev.type == "cuda":
-            power = power.to(dtype=torch.float16)
-            layout = layout.to(dtype=torch.float16)
-            if totalp is not None:
-                totalp = totalp.to(dtype=torch.float16)
             torch.cuda.synchronize()
 
         dl1 = time.perf_counter()
@@ -165,17 +154,16 @@ def time_ptq_fp16_ckpt(
     }
 
 
-def _replace_ptq_block(*, log_path: str, new_block: str) -> None:
+def _replace_fp32_block(*, log_path: str, new_block: str) -> None:
     with open(log_path, "r", encoding="utf-8") as f:
         s = f.read()
 
-    start_tok = "[ptq-fp16]"
+    # Replace the [fp32] block under [model_timing] (first occurrence of [fp32]).
+    start_tok = "[fp32]"
     i0 = s.find(start_tok)
     if i0 < 0:
         raise RuntimeError(f"Did not find {start_tok} in {log_path}")
 
-    # Replace from [ptq-fp16] up to (but not including) the next section header.
-    # In our log format, the next section is [hotspot_timing].
     next_tok = "\n[hotspot_timing]"
     i1 = s.find(next_tok, i0)
     if i1 < 0:
@@ -190,9 +178,9 @@ def _replace_ptq_block(*, log_path: str, new_block: str) -> None:
 def build_argparser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser()
     ap.add_argument(
-        "--ptq_fp16_ckpt",
+        "--fp32_ckpt",
         type=str,
-        default="/root/placement/flow_GCN/thermalmodel/checkpoints/guidance_b96_lr2e-4_ep195_PTQ/guidance_net_b96_lr2e-4_totalp_avg_resume_ep0195_seed0_bs8_lr2e-04_base96_gw0p1_fp16.pth",
+        default="/root/placement/flow_GCN/thermalmodel/checkpoints/guidance_b96_lr2e-4_ep200_20260430_resume/guidance_net_b96_lr2e-4_totalp_avg_resume_ep0195_seed0_bs8_lr2e-04_base96_gw0p1.pth",
     )
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--eval_bs", type=int, default=8)
@@ -216,8 +204,8 @@ def build_argparser() -> argparse.ArgumentParser:
 def main() -> None:
     args = build_argparser().parse_args()
 
-    t = time_ptq_fp16_ckpt(
-        args.ptq_fp16_ckpt,
+    t = time_fp32_ckpt(
+        args.fp32_ckpt,
         n_cases=args.n_cases,
         eval_bs=args.eval_bs,
         seed=args.seed,
@@ -228,7 +216,7 @@ def main() -> None:
     )
 
     new_block = (
-        "[ptq-fp16]\n"
+        "[fp32]\n"
         f"ckpt={t['ckpt']}\n"
         f"device={t['device']}\n"
         f"n_cases={t['n_cases']} eval_bs={t['eval_bs']} num_workers={t['num_workers']} pin_memory={t['pin_memory']}\n"
@@ -246,8 +234,8 @@ def main() -> None:
         "\n"
     )
 
-    _replace_ptq_block(log_path=args.out_time_log, new_block=new_block)
-    print(f"UPDATED [ptq-fp16] block in {args.out_time_log}")
+    _replace_fp32_block(log_path=args.out_time_log, new_block=new_block)
+    print(f"UPDATED [fp32] block in {args.out_time_log}")
 
 
 if __name__ == "__main__":

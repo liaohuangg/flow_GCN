@@ -18,32 +18,26 @@ env=conda:chipdiffusion
 ckpt=/root/placement/flow_GCN/thermalmodel/checkpoints/guidance_b96_lr2e-4_ep200_20260430_resume/guidance_net_b96_lr2e-4_totalp_avg_resume_ep0195_seed0_bs8_lr2e-04_base96_gw0p1.pth
 device=cuda
 n_cases=1000 eval_bs=8 num_workers=0 pin_memory=False
-dataset_build_s=30.737386
-total_wall_s=4.871843
-forward_only_s=1.289323
-dataloader_like_s=0.058915
-per_case_total_ms=4.871843
-per_case_forward_ms=1.289323
-per_case_dataloader_like_ms=0.058915
-per_case_total_minus_dataloader_ms=4.812928
-total_minus_forward_s=3.582520
-total_minus_forward_minus_dl_s=3.523605
+model_param_dtype=torch.float32
+dataset_build_s=33.520250
+total_wall_s=5.073977
+forward_only_s=1.510099
+dataloader_like_s=0.063284
+per_case_total_ms=5.073977
+per_case_forward_ms=1.510099
+per_case_dataloader_like_ms=0.063284
+per_case_total_minus_dataloader_ms=5.010694
+total_minus_forward_s=3.563878
+total_minus_forward_minus_dl_s=3.500594
 
-[ptq-fp16]
-ckpt=/root/placement/flow_GCN/thermalmodel/checkpoints/guidance_b96_lr2e-4_ep195_PTQ/guidance_net_b96_lr2e-4_totalp_avg_resume_ep0195_seed0_bs8_lr2e-04_base96_gw0p1_fp16.pth
-device=cuda
-n_cases=1000 eval_bs=8 num_workers=0 pin_memory=False
-model_param_dtype=torch.float16
-dataset_build_s=31.921412
-total_wall_s=4.701777
-forward_only_s=1.357463
-dataloader_like_s=0.087570
-per_case_total_ms=4.701777
-per_case_forward_ms=1.357463
-per_case_dataloader_like_ms=0.087570
-per_case_total_minus_dataloader_ms=4.614207
-total_minus_forward_s=3.344314
-total_minus_forward_minus_dl_s=3.256743
+1000 个 case 的时间是：                                                                                                                                  
+                                                                                                                                                                                                                     
+  - 端到端总耗时（含 DataLoader / H2D）：5.073977 s                                                                                                                                                                  
+  - 纯模型前向推理：1.510099 s                                                                                                                                                                                       
+                                                                                                                                                                                                                     
+  平均每个 case： 
+  - 含搬运：5.073977 ms
+  - 纯前向：1.510099 ms
 
 
 [hotspot_timing]
@@ -67,8 +61,35 @@ p50_per_case_s=1.376058
 hotspot_avg_per_case_ms=1382.152386
 
 [fp32]
-model_per_case_total_ms=4.871843
-model_per_case_total_minus_dataloader_ms=4.812928
-speedup_total_x=283.712
-speedup_total_minus_dataloader_x=287.183
 
+
+  A. total_wall_s（端到端 wall time）                                                                    
+                                                                                                         
+  - 定义：t_total_s = time.perf_counter() - t_wall0（fp32_case_time.py:99-140）                          
+  - 覆盖范围：从进入 dataloader 循环开始，到循环结束。      
+  - 包含内容：                                                                                           
+    - dataloader 取 batch（CPU）                                                                         
+    - .to(dev) 拷贝到 GPU（H2D）                                                                         
+    - .to(dtype=torch.float16) 类型转换                                                                  
+    - torch.cuda.synchronize() 带来的等待                                                                
+    - model(...) 前向                                                                                    
+  - 结论：这是真实的“你这段推理 pipeline 跑完一遍数据集”的 wall-clock                                    
+  时间（端到端），可以用来衡量“实际吞吐/延迟（包含搬运）”。                                              
+                                                                                                         
+  B. forward_only_s（更接近“纯推理”的时间，但不是完全纯）                                                
+                                                            
+  - CUDA 路径用的是 torch.cuda.Event 包裹 model(...)（fp32_case_time.py:122-130）                        
+  - 这是 GPU event 计的 前向范围（不含 dataloader / H2D / cast 的 perf_counter
+  部分），因此更接近“模型前向推理时间”。                                                                 
+  - 注意：它仍可能包含少量 framework 调度开销，但基本可以认为是 forward 的核心时间。
+                                                                                                         
+  C. dataloader_like_s（脚本自己定义的一段“像 dataloader 的时间”）                                       
+                                                                                                         
+  - 它测的是从 dl0 到 dl1（fp32_case_time.py:104-121）                                                   
+  - 里面包括：                                              
+    - power/layout/totalp = batch[...] .to(dev)                                                          
+    - fp16 cast                                                                                          
+    - 关键：torch.cuda.synchronize()（fp32_case_time.py:117）                                            
+  - 所以它并不只是 dataloader；更像是“数据搬运 + cast + 同步”这坨。                                      
+                                                                                                         
+  ---                
